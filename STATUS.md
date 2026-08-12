@@ -31,12 +31,8 @@
       A personal accessibility tool may belong elsewhere.
 - [ ] **Run `claude --plugin-dir .`** from a fresh session. This is the last
       untested path and the one users will take.
-- [ ] **Nothing is committed.** The whole repository is untracked apart from the
-      deleted brief.
-- [ ] Consider whether `beslutningslog.md` should have an English filename here,
-      since this repository is public and English throughout. It would need a
-      matching change to `/update-session-log`, which searches for the Danish
-      name.
+- [ ] **Committed as `82c535e`, not yet pushed.** The GitHub repository has been
+      renamed and the remote points at it.
 
 ## Senest
 

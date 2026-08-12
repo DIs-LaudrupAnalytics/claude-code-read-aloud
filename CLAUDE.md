@@ -154,7 +154,7 @@ If a file is absent, it simply has not been written yet.
 - `STATUS.md` is the present-tense picture. Read it first after a `/clear`.
 - `sessionslog/<date>.md` is an archive of what happened. It is local and does not
   come with a clone. Read it only when asked; it is history, not context.
-- `.claude/beslutningslog.md` records decisions the user has settled. **Read it
+- `.claude/decision-log.md` records decisions the user has settled. **Read it
   before changing anything that looks wrong or redundant.** An entry marked
   `besluttet` is decided: do not reverse it, and do not work around it, without
   asking first. If a decision looks wrong, say so and let the user rule on it.

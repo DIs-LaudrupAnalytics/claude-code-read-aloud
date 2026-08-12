@@ -1,4 +1,4 @@
-# Beslutningslog
+# Decision log
 
 **Durable design and architecture decisions** for `read-aloud`, in the spirit of
 an ADR: the ones a future developer asks "why is it built like this?" about, and
