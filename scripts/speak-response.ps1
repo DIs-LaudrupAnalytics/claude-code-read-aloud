@@ -34,8 +34,11 @@ try {
     if (-not (Test-Path -LiteralPath $tp)) { exit 0 }
     $session = [string]$payload.session_id
 
-    # The @() matters: Get-Content returns a bare string for a single-line file.
-    $lines = @(Get-Content -LiteralPath $tp -Encoding UTF8)
+    # Only the tail is read. The search below runs backwards from the end and
+    # stops at the first user entry or tool call, so the rest of the file is
+    # dead weight, and on a long session loading all of it took real time inside
+    # a hook that is killed after 10 seconds.
+    $lines = Get-TranscriptTail $tp ([int](Get-TtsField $cfg 'transcriptTailKb' 256) * 1024)
     $parts = New-Object System.Collections.Generic.List[string]
     $uuids = New-Object System.Collections.Generic.List[string]
     for ($i = $lines.Count - 1; $i -ge 0; $i--) {

@@ -17,7 +17,7 @@
 ' the program directory is version-bound when installed as a plugin: a shortcut
 ' into it would break on every single update. The fixed directory never moves.
 Option Explicit
-Dim fso, data, qdir, rdir, f, ts, pointer
+Dim fso, data, qdir, rdir, pdir, f, ts, pointer
 
 Set fso = CreateObject("Scripting.FileSystemObject")
 On Error Resume Next
@@ -64,6 +64,16 @@ If fso.FileExists(data & "\working.flag") Then fso.DeleteFile data & "\working.f
 rdir = data & "\running"
 If fso.FolderExists(rdir) Then
     For Each f In fso.GetFolder(rdir).Files
+        f.Delete True
+    Next
+End If
+
+' --- 5. forget what was waiting on an answer --------------------------------
+' One file per open approval. Left behind, they would keep the next waiting
+' tone alive after it should have stopped.
+pdir = data & "\pending"
+If fso.FolderExists(pdir) Then
+    For Each f In fso.GetFolder(pdir).Files
         f.Delete True
     Next
 End If

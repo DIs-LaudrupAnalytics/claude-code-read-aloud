@@ -45,7 +45,12 @@ try {
     $wantTools    = [bool](Get-TtsField $cfg 'announceTools' $true)
 
     # --- collect the current round, in the order it was written -------------
-    $lines = @(Get-Content -LiteralPath $tp -Encoding UTF8)
+    # Only the tail is read. The loop below walks backwards and stops at the
+    # user entry, so everything before that is never looked at, and loading a
+    # multi-megabyte transcript on every tool call was pushing this hook towards
+    # its 10 second timeout. If the window does not reach back to the prompt,
+    # the extra entries are caught by the per-uuid watermark and stay silent.
+    $lines = Get-TranscriptTail $tp ([int](Get-TtsField $cfg 'transcriptTailKb' 256) * 1024)
     $round = New-Object System.Collections.Generic.List[object]
     for ($i = $lines.Count - 1; $i -ge 0; $i--) {
         if ([string]::IsNullOrWhiteSpace($lines[$i])) { continue }
@@ -125,10 +130,12 @@ try {
             # request is coming, so there is nothing to overtake.
             Submit-Speech $qtext
 
-            # From here it is your turn. pending.flag makes PostToolUse stop the
-            # waiting tone the moment you have answered; without it the tone
-            # would only stop the next time something was spoken.
-            try { [System.IO.File]::WriteAllText((Join-Path $script:TtsData 'pending.flag'), 'x') } catch {}
+            # From here it is your turn. The pending entry makes PostToolUse
+            # stop the waiting tone the moment you have answered; without it the
+            # tone would only stop the next time something was spoken. It is
+            # keyed by tool_use_id, so another tool finishing in the meantime
+            # cannot answer on your behalf.
+            Add-Pending ('q-' + [string]$payload.tool_use_id)
             Start-Waiting
         }
     }
@@ -138,7 +145,11 @@ try {
     # delay the description of the command would always arrive before the
     # question itself. The daemon lets a '2-' file lie for a moment so the
     # permission request can get in front.
-    if ($announce) { Submit-Speech $announce -Hold }
+    #
+    # It is tagged with tool_use_id so PostToolUse can release this one and only
+    # this one. With several calls in flight, releasing them all let another
+    # call's description slip out ahead of its own permission question.
+    if ($announce) { Submit-Speech $announce -Hold -Tag ([string]$payload.tool_use_id) }
 } catch {
     Write-TtsLog ('narrate FAILED: ' + $_.Exception.Message)
 }

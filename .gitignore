@@ -1,8 +1,9 @@
-# Dataroden hoerer aldrig til i repoet. Den ligger normalt uden for tjekket,
-# men en manuel installation kan pege den herind under proevekoersler.
+# The data root never belongs in the repository. It normally lives outside the
+# checkout, but a manual install can point it in here during test runs.
 data/
 
-# Stemmemodeller hentes ved installation. De fylder et par hundrede megabyte.
+# Voice models are downloaded at install time. They run to a few hundred
+# megabytes.
 *.onnx
 *.onnx.json
 

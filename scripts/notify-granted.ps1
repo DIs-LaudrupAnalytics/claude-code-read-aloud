@@ -14,7 +14,6 @@
 $ErrorActionPreference = 'SilentlyContinue'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $root 'tts-common.ps1')
-$root = $script:TtsData   # the flags belong to the data, not to the program
 
 try {
     $cfg = Get-TtsConfig
@@ -33,15 +32,49 @@ try {
 
     # The tool has run. If permission was never requested, the held announcement
     # should be released now rather than sitting out the window.
-    Release-HeldSpeech
+    #
+    # Only OUR OWN announcement, identified by tool_use_id. Releasing every held
+    # item meant that with two calls in flight the first to finish let the
+    # second one's description out before Claude Code had decided whether to ask
+    # about it, and the question then arrived after its own answer. An item we
+    # cannot identify keeps waiting for holdMs, which is what that ceiling is
+    # for.
+    #
+    # The guard is the point: Release-HeldSpeech with an empty tag releases
+    # EVERYTHING, so calling it unguarded on a payload without an id would put
+    # the old race straight back. Set-RunningMarker defends against a missing id
+    # for the same reason.
+    $callId = [string]$payload.tool_use_id
+    if ($callId) { Release-HeldSpeech $callId }
 
     # This call is no longer running. If others are, their markers stay, and the
     # working message goes on reporting the oldest of them.
     if ($payload) { Clear-RunningMarker $payload }
 
-    $flag = Join-Path $root 'pending.flag'
-    if (-not (Test-Path -LiteralPath $flag)) { exit 0 }
-    Remove-Item -LiteralPath $flag -Force -ErrorAction SilentlyContinue
+    # Was THIS call the one being waited on? Entries are keyed by tool_use_id,
+    # prefixed with the kind: 'q-' for a question, 'p-' for an approval. A
+    # single flag was cleared by whichever tool finished first, and the tone
+    # then stopped while the question was still on screen.
+    #
+    # 'p-<tool name>' is the fallback for an approval event that carried no id.
+    # It is a heuristic and it can be cleared by a different call of the same
+    # tool, for instance a second Bash that needed no approval. That is a
+    # narrower version of the bug being fixed rather than a cure for it, and it
+    # only applies where there is no id to pair on.
+    $answered = Remove-Pending @(
+        ('q-' + [string]$payload.tool_use_id),
+        ('p-' + [string]$payload.tool_use_id),
+        ('p-' + [string]$payload.tool_name))
+    if (-not $answered) {
+        # The Notification fallback cannot key its entry to a call at all, so it
+        # uses the shared key. Only reached when nothing of our own matched.
+        $answered = Remove-Pending @('p-any')
+    }
+    if (-not $answered) { exit 0 }
+
+    # Another approval may still be open. Stopping the tone then would remove
+    # the one signal saying that something is waiting on you.
+    if (Test-AnyPending) { exit 0 }
 
     # The silence IS the acknowledgement. No tone is played here: the waiting
     # tone stops, and that is heard more clearly than a single short sound in

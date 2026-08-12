@@ -28,9 +28,28 @@ if     ($env:CLAUDE_TTS_DATA)    { $script:TtsData = $env:CLAUDE_TTS_DATA }
 elseif ($env:CLAUDE_PLUGIN_DATA) { $script:TtsData = $env:CLAUDE_PLUGIN_DATA }
 else                             { $script:TtsData = Join-Path $script:TtsStable 'data' }
 
+$script:TtsLogChecked = $false
+
 function Write-TtsLog([string]$msg) {
+    $path = Join-Path $script:TtsData 'tts.log'
+    # Rotate before writing. Every hook, both loops and the daemon log here, and
+    # nothing ever trimmed the file: twelve hours of real use left it the largest
+    # thing in the data root. One generation is kept, which is enough to
+    # diagnose what just went wrong.
+    #
+    # Checked once per process, not once per line. A hook writes a handful of
+    # lines and lives for a second; a stat per line would be pure waste.
+    if (-not $script:TtsLogChecked) {
+        $script:TtsLogChecked = $true
+        try {
+            $f = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+            if ($f -and $f.Length -gt 2MB) {
+                Move-Item -LiteralPath $path -Destination ($path + '.1') -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
+    }
     try {
-        Add-Content -LiteralPath (Join-Path $script:TtsData 'tts.log') -Value ((Get-Date -Format 's') + ' ' + $msg) -Encoding UTF8
+        Add-Content -LiteralPath $path -Value ((Get-Date -Format 's') + ' ' + $msg) -Encoding UTF8
     } catch {}
 }
 
@@ -46,10 +65,18 @@ function Initialize-TtsData {
                          (Join-Path $script:TtsData 'cache'),
                          (Join-Path $script:TtsData 'state'),
                          (Join-Path $script:TtsData 'running'),
+                         (Join-Path $script:TtsData 'pending'),
                          (Join-Path $script:TtsData 'voices'),
                          $script:TtsStable)) {
             if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
         }
+
+        # An approval used to be tracked by a single pending.flag. It is now one
+        # file per call under pending/, so a second tool finishing cannot clear
+        # an approval that is still open. Remove the old file if an earlier
+        # version left one behind; nothing reads it any more.
+        $legacy = Join-Path $script:TtsData 'pending.flag'
+        if (Test-Path -LiteralPath $legacy) { Remove-Item -LiteralPath $legacy -Force -ErrorAction SilentlyContinue }
 
         $cfg = Join-Path $script:TtsData 'tts-config.json'
         if (-not (Test-Path -LiteralPath $cfg)) {
@@ -84,6 +111,64 @@ function Get-TtsConfig {
 function Get-TtsField($cfg, [string]$name, $fallback) {
     if ($cfg -and ($cfg.PSObject.Properties.Name -contains $name)) { return $cfg.$name }
     return $fallback
+}
+
+# --- reading the transcript --------------------------------------------------
+function Get-TranscriptTail([string]$path, [int]$maxBytes) {
+    # Return the last lines of the transcript, newest last.
+    #
+    # Both hooks that read the transcript only ever look backwards from the end
+    # until they hit a user entry, so the beginning of the file is dead weight.
+    # It is a lot of dead weight: a long session runs to many megabytes, and
+    # Get-Content loaded every line of it on every single tool call. A hook has
+    # ten seconds before it is killed, and narration that dies that way dies
+    # silently. work-loop.ps1 has read only the tail for exactly this reason.
+    #
+    # ReadWrite sharing is required: Claude Code is appending to the file while
+    # we read, and opening it without that fails mid-turn.
+    #
+    # EVERY return uses the comma operator. PowerShell unrolls a single-element
+    # array on the way out of a function, so a plain 'return $lines' hands back
+    # a bare String when the window contains exactly one line, and the caller's
+    # $lines[$i] then walks it one CHARACTER at a time. That is not theoretical:
+    # one tool result larger than the window leaves precisely one whole line
+    # behind it, and the final answer would go unspoken with nothing in the log.
+    # The comma keeps the array an array. Callers must NOT wrap the result in
+    # @(), which would undo the empty case by wrapping @() into a one-element
+    # array.
+    if ($maxBytes -le 0) { $maxBytes = 262144 }
+    try {
+        $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $partial = $false
+        $read = 0
+        $buf = $null
+        try {
+            $take = [int][Math]::Min($maxBytes, $fs.Length)
+            if ($take -le 0) { return ,@() }
+            $partial = ($take -lt $fs.Length)
+            $fs.Seek(-$take, [System.IO.SeekOrigin]::End) | Out-Null
+            $buf = New-Object byte[] $take
+            # Read is allowed to return less than it was asked for.
+            while ($read -lt $take) {
+                $n = $fs.Read($buf, $read, $take - $read)
+                if ($n -le 0) { break }
+                $read += $n
+            }
+        } finally { $fs.Close() }
+
+        $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+        $lines = @($text -split "`n" | ForEach-Object { $_.TrimEnd("`r") })
+        # The first line is cut in half wherever the window happened to start,
+        # and half a line of JSON parses as nothing. Drop it.
+        if ($partial) {
+            if ($lines.Count -le 1) { return ,@() }
+            $lines = @($lines[1..($lines.Count - 1)])
+        }
+        return ,$lines
+    } catch {
+        Write-TtsLog ('could not read the transcript tail: ' + $_.Exception.Message)
+        return ,@()
+    }
 }
 
 # --- markdown to speakable prose --------------------------------------------
@@ -187,7 +272,10 @@ function Get-QuestionSpeech($payload, [string]$mode, [int]$descChars) {
     #
     # Options are numbered in words ("option one"), not digits. Spoken aloud a
     # digit disappears inside the sentence, while the word stands out.
-    $qs = @($payload.tool_input.questions)
+    # Where-Object, not a bare @(). In PowerShell 5.1 @($null) has count ONE, so
+    # a payload with no questions passed the zero guard below and was read aloud
+    # as "Option one. ." The filter drops the null and the count is then real.
+    $qs = @($payload.tool_input.questions | Where-Object { $_ })
     if ($qs.Count -eq 0) { return '' }
 
     $ord = @('one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight')
@@ -196,7 +284,13 @@ function Get-QuestionSpeech($payload, [string]$mode, [int]$descChars) {
     $qi = 0
     foreach ($q in $qs) {
         $qi++
-        if ($qs.Count -gt 1) { $parts.Add('Question ' + $ord[$qi - 1] + ' of ' + $qs.Count + '.') }
+        if ($qs.Count -gt 1) {
+            # Same bounds check as the option loop below. Without it a ninth
+            # question indexes past the end of $ord and the sentence comes out
+            # as "Question, of nine."
+            $qword = if ($qi -le $ord.Count) { $ord[$qi - 1] } else { [string]$qi }
+            $parts.Add('Question ' + $qword + ' of ' + $qs.Count + '.')
+        }
         else                 { $parts.Add('A question for you.') }
 
         $t = ConvertTo-Speakable ([string]$q.question)
@@ -369,7 +463,7 @@ function Start-PiperDaemon {
     } catch { Write-TtsLog ('could not start piper-daemon: ' + $_.Exception.Message) }
 }
 
-function Submit-Speech([string]$text, [switch]$Priority, [switch]$Hold) {
+function Submit-Speech([string]$text, [switch]$Priority, [switch]$Hold, [string]$Tag) {
     if ([string]::IsNullOrWhiteSpace($text)) { return }
     $cfg = Get-TtsConfig
     if (-not $cfg -or -not $cfg.enabled) { return }
@@ -400,7 +494,15 @@ function Submit-Speech([string]$text, [switch]$Priority, [switch]$Hold) {
         # PreToolUse fires BEFORE Claude Code decides to ask. The daemon leaves
         # it lying for a moment so a permission request can overtake it.
         $prefix = if ($Priority) { '0' } elseif ($Hold) { '2' } else { '1' }
-        $name = $prefix + '-' + ((Get-Date).Ticks.ToString('D19')) + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt'
+        # A held item carries the id of the call it belongs to, so PostToolUse
+        # can release ITS OWN announcement and leave anyone else's held. The tag
+        # sits after the timestamp, so it cannot disturb the ordering.
+        $tagPart = ''
+        if ($Tag) {
+            $safeTag = ($Tag -replace '[^A-Za-z0-9_-]', '')
+            if ($safeTag) { $tagPart = '-t' + $safeTag }
+        }
+        $name = $prefix + '-' + ((Get-Date).Ticks.ToString('D19')) + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + $tagPart + '.txt'
         [System.IO.File]::WriteAllText((Join-Path $qdir $name), $text, (New-Object System.Text.UTF8Encoding($false)))
         Start-PiperDaemon
     } else {
@@ -490,7 +592,7 @@ function Start-Working {
     } catch { Write-TtsLog ('could not start the working message: ' + $_.Exception.Message) }
 }
 
-function Release-HeldSpeech {
+function Release-HeldSpeech([string]$Tag) {
     # Release held tool announcements by renaming '2-' to '1-'.
     #
     # Called from PostToolUse. If the tool got to run, no permission question
@@ -498,13 +600,121 @@ function Release-HeldSpeech {
     # window. Without this, fast tools would only be announced several seconds
     # after they had finished.
     #
+    # With a tag, only the announcement belonging to THAT call is released.
+    # Releasing all of them was wrong as soon as two tools ran at once: the
+    # first to finish let a second call's description out before Claude Code had
+    # decided whether to ask about it, which is the whole race the hold exists to
+    # prevent. An untagged item is simply left to its holdMs ceiling, which is
+    # the safe direction to fail in.
+    #
+    # No tag means release everything, which is what the two approval hooks
+    # want: their question is already queued as '0-', so anything released now
+    # sorts behind it whoever it belongs to.
+    #
     # The timestamp in the name is preserved, so the order between queue items
     # holds.
     $qdir = Join-Path $script:TtsData 'queue'
     if (-not (Test-Path -LiteralPath $qdir)) { return }
+    $safeTag = ($Tag -replace '[^A-Za-z0-9_-]', '')
     Get-ChildItem -LiteralPath $qdir -Filter '2-*.txt' -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($safeTag -and ($_.Name -notlike ('*-t' + $safeTag + '.txt'))) { return }
         try { Rename-Item -LiteralPath $_.FullName -NewName ('1' + $_.Name.Substring(1)) -ErrorAction Stop } catch {}
     }
+}
+
+# --- who is waiting on an answer? -------------------------------------------
+# One file per open approval, not a single flag. A single pending.flag was
+# cleared by whichever tool finished first, so with two calls in flight the
+# waiting tone stopped while the question was still on screen: the one sound
+# telling you that you are being waited on went away at the wrong moment.
+#
+# The key is the tool_use_id where there is one. The Notification fallback
+# carries no id and no tool name, so it uses a fixed key; that path is no worse
+# than it was.
+#
+# Keys carry a kind in front: 'p-' for an approval, 'q-' for a question asked
+# through AskUserQuestion. The kind exists so a new approval can retire the
+# previous one without touching an open question. Claude Code asks for one
+# approval at a time, so by the time a new question is asked the last one has
+# been answered or denied, and a denial is the case that matters: it never
+# reaches PostToolUse, so its entry would otherwise sit there and suppress the
+# next Stop-Waiting for as long as the stale sweep allows.
+function Get-PendingDir {
+    $dir = Join-Path $script:TtsData 'pending'
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    return $dir
+}
+
+function ConvertTo-PendingKey([string]$key) {
+    if (-not $key) { return 'any' }
+    $k = ($key -replace '[^A-Za-z0-9_-]', '')
+    if (-not $k) { return 'any' }
+    return $k
+}
+
+function Add-Pending([string]$key) {
+    try {
+        $f = Join-Path (Get-PendingDir) ((ConvertTo-PendingKey $key) + '.txt')
+        [System.IO.File]::WriteAllText($f, 'x')
+    } catch {}
+}
+
+function Remove-Pending([string[]]$keys) {
+    # True if one of the keys was actually open. The caller uses that to tell
+    # "the approval I was waiting for was answered" from "some other tool
+    # finished", which must not stop the tone.
+    $hit = $false
+    try {
+        $dir = Get-PendingDir
+        foreach ($k in $keys) {
+            if (-not $k) { continue }
+            $f = Join-Path $dir ((ConvertTo-PendingKey $k) + '.txt')
+            if (Test-Path -LiteralPath $f) {
+                Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+                $hit = $true
+            }
+        }
+    } catch {}
+    return $hit
+}
+
+function Test-AnyPending {
+    # Stale entries are swept first. A call that was denied never reaches
+    # PostToolUse, so its entry would otherwise sit there forever and keep the
+    # waiting tone alive through every approval that came after it.
+    try {
+        $dir = Get-PendingDir
+        $cfg = Get-TtsConfig
+        $maxMs = [int](Get-TtsField $cfg 'waitMaxMs' 120000)
+        $cutoff = (Get-Date).AddMilliseconds(-1 * ($maxMs + 30000))
+        Get-ChildItem -LiteralPath $dir -Filter '*.txt' -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -lt $cutoff } |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+        return (@(Get-ChildItem -LiteralPath $dir -Filter '*.txt' -ErrorAction SilentlyContinue).Count -gt 0)
+    } catch { return $false }
+}
+
+function Clear-PendingKind([string]$kind) {
+    # Retire every entry of one kind. Called when a new approval question is
+    # asked: whatever was being waited on before it has been answered or denied.
+    if (-not $kind) { return }
+    try {
+        $dir = Join-Path $script:TtsData 'pending'
+        if (Test-Path -LiteralPath $dir) {
+            Get-ChildItem -LiteralPath $dir -Filter ($kind + '-*.txt') -ErrorAction SilentlyContinue |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
+
+function Clear-AllPending {
+    try {
+        $dir = Join-Path $script:TtsData 'pending'
+        if (Test-Path -LiteralPath $dir) {
+            Get-ChildItem -LiteralPath $dir -Filter '*.txt' -ErrorAction SilentlyContinue |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
 }
 
 # --- silence ----------------------------------------------------------------
@@ -520,6 +730,11 @@ function Stop-AllSpeech {
     # so a new prompt restarts them rather than killing them.
     Stop-Working
     Clear-AllRunningMarkers
+
+    # Nothing is waiting on an answer any more either. A prompt, or the hush
+    # key, ends the approval you were being asked about as surely as answering
+    # it would.
+    Clear-AllPending
 
     # The daemon must NOT be killed here. It holds the voice model in memory,
     # and a restart costs both process startup and about 2 seconds of loading,

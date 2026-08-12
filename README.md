@@ -206,9 +206,16 @@ Tested: Windows 11, Claude Code 2.1.220, Python 3.12, the
 `en_US-lessac-medium` voice, one machine, one user.
 
 Not tested: any other operating system, any other Python version, Windows
-PowerShell versions other than 5.1, other Piper voices beyond brief trials,
-multiple concurrent Claude Code sessions, and installation by anybody other than
-the author. The manual install path has had less use than the plugin path.
+PowerShell versions other than 5.1, other Piper voices beyond brief trials, and
+installation by anybody other than the author. The manual install path has had
+less use than the plugin path.
+
+**One session at a time.** Two Claude Code sessions sharing a data directory
+also share the files that say which transcript is current and whether something
+is waiting on you, so the narration follows whichever session spoke last.
+Nothing breaks and no tool call is affected, but the running commentary will be
+confusing. Give a second session its own `CLAUDE_TTS_DATA` if you need both
+talking. See `docs/architecture.md` for what it would take to fix properly.
 
 If you try it and it breaks, an issue with the contents of `tts.log` from your
 data directory is genuinely useful.

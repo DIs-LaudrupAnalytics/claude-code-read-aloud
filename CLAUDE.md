@@ -60,6 +60,12 @@ The payload must carry a `transcript_path` that exists, and the config must have
 `enabled` set. Without either, the hook returns on its second line and the test
 passes while proving nothing:
 
+One side effect to undo afterwards: `tts-prompt.ps1` rewrites
+`%USERPROFILE%\.claude\read-aloud\data.path` to whatever `CLAUDE_TTS_DATA` says,
+so the hush hotkey points at the scratch directory until the next real prompt.
+Write the live data root back into that file when the test is done, or the
+silence key does nothing when it is needed.
+
 ```powershell
 $d = "C:\temp\ttstest"; Remove-Item -Recurse -Force $d -EA 0
 New-Item -ItemType Directory $d | Out-Null
@@ -68,7 +74,7 @@ $tp = "$d\transcript.jsonl"
 @('{"type":"user","uuid":"u1","message":{"content":"hi"}}',
   '{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"Checking the config."}]}}'
 ) | Set-Content $tp -Encoding utf8
-powershell -NoProfile -File scripts\tts-prompt.ps1 '{}' | Out-Null   # provisions $d
+'{}' | powershell -NoProfile -File scripts\tts-prompt.ps1 | Out-Null   # provisions $d
 (Get-Content "$d\tts-config.json" -Raw).Replace('"enabled": false','"enabled": true') |
   Set-Content "$d\tts-config.json" -Encoding utf8
 
@@ -135,6 +141,13 @@ its absence produced a specific, hard-to-diagnose fault.
   Code decides to ask, so the announcement is queued as `2-` and renamed to `1-`
   once the question is queued as `0-`. An earlier timer-based version lost the
   race. `holdMs` is only a ceiling for the case where no question ever comes.
+- **Anything that tracks one tool call is keyed by `tool_use_id`, never a single
+  flag.** That covers the markers in `running/`, the entries in `pending/` and
+  the tag on a held announcement. Tools run in parallel, and every version of
+  this that used one shared file was cleared by whichever call finished first:
+  the status message reported the wrong command, the waiting tone stopped while
+  the question was still on screen, and a second call's description escaped
+  ahead of its own permission question.
 - **Keep every `.ps1` and `.vbs` pure ASCII.** PowerShell 5.1 reads a BOM-less
   UTF-8 file as ANSI. Non-ASCII characters needed in regular expressions must be
   written as `\u` escapes; `ConvertTo-Speakable` depends on `\u2014` and

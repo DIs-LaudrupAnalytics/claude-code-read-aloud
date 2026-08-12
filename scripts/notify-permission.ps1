@@ -65,8 +65,16 @@ try {
 
     # Remember that we asked, so PostToolUse can acknowledge once permission has
     # been granted.
+    #
+    # This event carries neither a tool_use_id nor a tool name, only a message,
+    # so the entry cannot be tied to a particular call and goes under the shared
+    # key. PostToolUse falls back to it when it recognises nothing of its own,
+    # which means the old behaviour survives on this path: the first tool to
+    # finish clears it. That is the best available here, and it only applies to
+    # a Claude Code without the PermissionRequest event.
     if ($isPermission) {
-        try { [System.IO.File]::WriteAllText((Join-Path $root 'pending.flag'), 'x') } catch {}
+        Clear-PendingKind 'p'
+        Add-Pending 'p-any'
     }
 
     $text = ConvertTo-Speakable $msg
@@ -83,6 +91,14 @@ try {
     # Claude Code's own delay (7.1 s), PowerShell startup (0.37 s) and the tone
     # (0.48 s). You lose that kind of race sooner or later, and we did: the
     # description slipped out through the gap.
+    #
+    # Untargeted, unlike permission-request.ps1, because this event carries no
+    # tool_use_id and no tool name: there is nothing to aim at. With two calls
+    # announced in the same batch this can free the other one's description
+    # early. That is accepted here and only here. This path exists for a Claude
+    # Code without the PermissionRequest event, where holdMs has to be raised to
+    # seven seconds or more anyway, and then this release is the only thing
+    # keeping the announcement prompt.
     Release-HeldSpeech
 } catch {
     Write-TtsLog ('notify FAILED: ' + $_.Exception.Message)

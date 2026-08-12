@@ -79,6 +79,44 @@ The first version of this used `holdMs` alone and tried to outlast Claude Code's
 own `Notification` delay. That is a race, and races get lost. Do not go back to
 it.
 
+A held item carries the `tool_use_id` of the call it belongs to, appended to the
+file name after the timestamp so it cannot disturb the sort. `PostToolUse`
+releases only its own. Releasing all of them held only while calls were
+sequential: with two in flight, the first to finish let the second one's
+description out before Claude Code had decided whether to ask about it, and the
+question then arrived after its own answer. An announcement that carries no id
+simply waits for `holdMs`, which is the safe direction to fail in.
+
+The two approval hooks still release everything, and should. Their question is
+already queued as `0-`, so whatever is released now sorts behind it no matter
+whose it is.
+
+### Who is waiting on you
+
+`pending/` holds one file per open approval, keyed by `tool_use_id` where the
+event carries one and by tool name otherwise. `PostToolUse` stops the waiting
+tone only when it recognises one of its own keys and nothing else is left open.
+
+Keys carry their kind in front: `p-` for an approval, `q-` for a question asked
+through `AskUserQuestion`. A new approval question retires every `p-` entry
+first, because Claude Code asks about one call at a time, so anything still
+marked has been answered or denied by then. The denial is the case that needs
+it: a denied call never reaches `PostToolUse`, and its entry would otherwise
+convince the next `Stop-Waiting` that something was still open, leaving the tone
+sounding while Claude worked. Questions are left alone, since one can still be
+open when an approval arrives.
+
+This used to be a single `pending.flag`, and any tool finishing cleared it. With
+parallel calls that stopped the tone while the question was still on screen,
+which removes the one signal saying you are being waited on. The `Notification`
+fallback carries neither an id nor a tool name, so it writes a shared key that
+`PostToolUse` only falls back to when it recognises nothing of its own; on that
+path the old behaviour survives, because nothing better is available.
+
+Entries are swept when they grow older than `waitMaxMs`. A denied call never
+reaches `PostToolUse`, and without the sweep its entry would keep the tone alive
+through every approval after it.
+
 ### Why the daemon is never killed
 
 Killing it produces silence, but it also drops the model from memory, and the
@@ -150,6 +188,18 @@ Cache files are written to a temporary name and moved into place with
 file simultaneously and leave half a WAV that broke playback every time that
 message recurred.
 
+The cache is pruned to `cacheMaxFiles` and `cacheMaxMb`, oldest use first, at
+startup and every ten minutes while the queue is idle. The premise of caching is
+that short messages repeat word for word, and tool announcements break it: they
+carry the command's own description, so each one is unique, cached once and
+never read again. Twelve hours of use left 337 files and 40 MB that nothing
+would ever look at. A cache hit touches the file, so the mtime is a record of
+last use and the messages that keep coming back are the last to go. Windows
+atime is not reliable enough to use instead.
+
+`tts.log` is rotated the same way, at 2 MB, keeping one generation. Every hook,
+both loops and the daemon append to it, and nothing used to trim it.
+
 ## Text handling
 
 `ConvertTo-Speakable` strips markdown down to prose: headings, bullets, code
@@ -169,6 +219,40 @@ that happened two minutes ago is noise on top of the present.
 Duplicate speech is prevented by a per-session watermark in `state/`, recording
 the `uuid` of every entry already spoken. One answer can trigger several tool
 calls, so `PreToolUse` fires repeatedly over the same content.
+
+Both hooks that read the transcript read only the last `transcriptTailKb`
+kilobytes of it. Each walks backwards from the end and stops at the first user
+entry, so the rest of the file was never looked at, and a hook has ten seconds
+before Claude Code kills it. On a long session, loading a multi-megabyte
+transcript on every single tool call was approaching that ceiling, and narration
+that dies that way dies silently. If the window does not reach back to the
+prompt, the extra entries are caught by the watermark and stay quiet.
+
+## One data root, one session
+
+`transcript.path`, `working.flag` and `waiting.flag` are single files in one data
+root. Two Claude Code sessions sharing a data root therefore share them, and the
+last prompt wins: the working loop can end up watching the other session's
+transcript, and either session can stop the other's waiting tone. Nothing
+crashes and no tool call is affected, but the narration belongs to whichever
+session spoke last.
+
+It reaches further than those three files. `running/` and `pending/` are keyed
+by `tool_use_id`, which is unique enough not to collide, but they are swept
+wholesale: `Stop-AllSpeech` runs `Clear-AllRunningMarkers` and
+`Clear-AllPending`, so a prompt in one session discards the other session's
+in-flight markers and open approvals. Only `state/`, the spoken watermark, is
+keyed by `session_id` and genuinely per session.
+
+This is a known limitation, not a design goal. The way out, if it ever matters,
+is to key the three flag files by `session_id` and to scope the two sweeps to
+the session that asked for them. Until then, run one session at a time, or give
+the second one its own `CLAUDE_TTS_DATA`.
+
+`transcript.path` is written by `UserPromptSubmit` as well as `PreToolUse`. It
+used to be written only by the latter, so a turn with no tool calls left the
+previous turn's transcript in place, and a fresh session had no pointer at all
+until its first tool ran.
 
 ## The tones
 

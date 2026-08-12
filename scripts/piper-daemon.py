@@ -67,10 +67,33 @@ LOGPATH  = os.path.join(DATA, "tts.log")
 VOICEDIR = os.path.join(DATA, "voices")
 
 CACHE_MAX_CHARS = 300      # only short, repeated messages are worth storing
+LOG_MAX_BYTES   = 2 * 1024 * 1024
 _seq = 0
+_log_writes = 0
+
+
+def rotate_log():
+    """Keep one generation of the log and no more.
+
+    Nothing used to trim it. Every hook, both loops and this daemon append to
+    the same file, and after half a day of real use it was the largest thing in
+    the data root. os.replace can fail if another process happens to hold the
+    file open, which is fine: the next writer tries again."""
+    try:
+        if os.path.getsize(LOGPATH) > LOG_MAX_BYTES:
+            os.replace(LOGPATH, LOGPATH + ".1")
+    except OSError:
+        pass
 
 
 def log(msg):
+    global _log_writes
+    # Checked now and then rather than on every line. The daemon is long lived
+    # and writes a line per queue item, so a stat per write would be waste, but
+    # it must not be able to run for hours without ever looking.
+    if _log_writes % 100 == 0:
+        rotate_log()
+    _log_writes += 1
     try:
         with open(LOGPATH, "a", encoding="utf-8") as f:
             f.write("%s piper %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S"), msg))
@@ -125,16 +148,80 @@ def clear_stop():
         pass
 
 
-def drain_queue():
+def drain_queue(cutoff=None):
+    """Throw away the backlog the stop was aimed at, and nothing newer.
+
+    The cutoff is the moment silence was asked for. Without it this deleted
+    whatever happened to be in the directory when the daemon got round to
+    looking, and the hooks queue again immediately: UserPromptSubmit asks for
+    silence and then starts the working message about a second later. That
+    message was being swallowed by the stop that came before it."""
     try:
         for f in os.listdir(QUEUE):
-            if f.endswith(".txt"):
-                try:
-                    os.remove(os.path.join(QUEUE, f))
-                except OSError:
-                    pass
+            if not f.endswith(".txt"):
+                continue
+            p = os.path.join(QUEUE, f)
+            try:
+                if cutoff is not None and os.path.getmtime(p) > cutoff:
+                    continue
+                os.remove(p)
+            except OSError:
+                pass
     except OSError:
         pass
+
+
+def prune_cache(cfg):
+    """Hold the cache to a ceiling, oldest use out first.
+
+    Only short messages are cached, on the theory that they repeat word for
+    word. Tool announcements broke that: they carry the command's own
+    description, so every one of them is unique, cached once and never played
+    again. Twelve hours of real use left 337 files and 40 MB that nothing would
+    ever read.
+
+    Recency is the file's mtime, which a cache hit touches. Windows atime is
+    not reliable enough to lean on."""
+    try:
+        limit_files = int(cfg.get("cacheMaxFiles", 300))
+        limit_bytes = float(cfg.get("cacheMaxMb", 30)) * 1024 * 1024
+    except (TypeError, ValueError):
+        limit_files, limit_bytes = 300, 30 * 1024 * 1024
+    # Zero or less means no ceiling on that dimension, not a ceiling of zero.
+    if limit_files <= 0:
+        limit_files = float("inf")
+    if limit_bytes <= 0:
+        limit_bytes = float("inf")
+    if limit_files == float("inf") and limit_bytes == float("inf"):
+        return
+    entries = []
+    total = 0
+    try:
+        for name in os.listdir(CACHE):
+            if not name.endswith(".wav"):
+                continue
+            p = os.path.join(CACHE, name)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            entries.append((st.st_mtime, st.st_size, p))
+            total += st.st_size
+    except OSError:
+        return
+    entries.sort()                      # oldest use first
+    removed = 0
+    for mtime, size, p in entries:
+        if len(entries) - removed <= limit_files and total <= limit_bytes:
+            break
+        try:
+            os.remove(p)
+            total -= size
+            removed += 1
+        except OSError:
+            pass
+    if removed:
+        log("cache: removed %d of %d files, %.1f MB left" % (removed, len(entries), total / 1048576.0))
 
 
 # Em dash, en dash, and a hyphen surrounded by spaces. All three are used as a
@@ -275,6 +362,12 @@ def speak(voice, text, syn, cfg, pause=0.35, dash_pause=None):
         key = cache_key(text, cfg)
         cached = os.path.join(CACHE, key + ".wav")
         if os.path.exists(cached):
+            # Touch it: the mtime is what prune_cache reads as "last used", so
+            # a message that keeps coming back is the last to be thrown out.
+            try:
+                os.utime(cached, None)
+            except OSError:
+                pass
             play_interruptible(cached)
             return
         try:
@@ -383,6 +476,9 @@ def main():
     with open(PIDFILE, "w", encoding="ascii") as f:
         f.write(str(os.getpid()))
     sweep_orphans()
+    rotate_log()
+    prune_cache(load_config())
+    next_prune = time.time() + 600
     clear_stop()
     # A marker left behind by a killed daemon would make the waiting tone
     # believe speech was happening, and then it would never sound at all.
@@ -422,7 +518,14 @@ def main():
                 break
 
             if stop_requested():
-                drain_queue()
+                # The flag's own timestamp is the moment silence was asked for.
+                # Anything queued after it belongs to what comes next, not to
+                # the backlog being thrown away.
+                try:
+                    cutoff = os.path.getmtime(STOPFLAG)
+                except OSError:
+                    cutoff = time.time()
+                drain_queue(cutoff)
                 clear_stop()
 
             idle_timeout = float(cfg.get("idleTimeout", 1800))
@@ -434,6 +537,12 @@ def main():
             if not items:
                 if time.time() - idle_since > idle_timeout:
                     break
+                # Housekeeping belongs in the quiet moments. Doing it between
+                # two utterances would put a directory listing in front of
+                # speech that is already waiting to be heard.
+                if time.time() >= next_prune:
+                    prune_cache(cfg)
+                    next_prune = time.time() + 600
                 time.sleep(0.1)
                 continue
 

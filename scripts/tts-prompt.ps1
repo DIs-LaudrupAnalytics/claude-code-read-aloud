@@ -53,6 +53,33 @@ Stop-AllSpeech
 $cfgWarm = Get-TtsConfig
 if ($cfgWarm -and $cfgWarm.enabled -and (Test-PiperReady $cfgWarm)) { Start-PiperDaemon }
 
+# --- 2b2. tell the loops where the transcript is ----------------------------
+# The pointer used to be written only by the PreToolUse hook, so in a turn with
+# no tool calls it still named the PREVIOUS turn's transcript. In a new session
+# that means the working loop watches the wrong file and cannot see that you
+# interrupted; in a resumed one there was no pointer at all until the first tool
+# ran. Written here it is correct from the first prompt onwards.
+#
+# Note that this is one file for one data root: two Claude Code sessions running
+# side by side share it, and the last prompt wins. See the note on concurrent
+# sessions in docs/architecture.md.
+# IsInputRedirected is checked first. Claude Code always pipes the payload in
+# and closes the handle, but run by hand from a console this would sit and wait
+# for a key that is never coming, and the hook would hang until it was killed.
+# The repository's own test procedure ran it that way.
+try {
+    $raw = if ([Console]::IsInputRedirected) { [Console]::In.ReadToEnd() } else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($raw)) {
+        $tp = [string]($raw | ConvertFrom-Json).transcript_path
+        if ($tp) {
+            $tp = $tp -replace '/', '\'
+            if (Test-Path -LiteralPath $tp) {
+                [System.IO.File]::WriteAllText((Join-Path $root 'transcript.path'), $tp)
+            }
+        }
+    }
+} catch {}
+
 # --- 2c. speak up while Claude works ----------------------------------------
 # The terminal shows "Thinking", and after a while "still thinking". If you are
 # listening instead, that exact state is pure silence, and silence otherwise

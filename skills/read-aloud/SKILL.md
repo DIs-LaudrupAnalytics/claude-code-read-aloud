@@ -78,6 +78,17 @@ user dictates them with Windows Voice Access while the speech is running.
   discarded rather than spoken. If the daemon has been down there is otherwise a
   pile waiting, and speech about something that happened two minutes ago is
   noise on top of the present. `0` disables discarding.
+- `cachefiles <n>` / `cachemb <n>` — set `cacheMaxFiles` (default `300`) and
+  `cacheMaxMb` (default `30`): the ceiling on the synthesis cache, pruned oldest
+  use first while the queue is idle. Caching assumes short messages repeat word
+  for word, and tool announcements do not: each carries its own command
+  description, so it is cached once and never read again. Without a ceiling the
+  directory simply grows. `0` on either means no limit on that one.
+- `tailkb <n>` — set `transcriptTailKb`, default `256`: how much of the end of
+  the transcript the hooks read. They search backwards and stop at the last
+  prompt, so the rest is never used, and reading a multi-megabyte file on every
+  tool call pushes the hook towards the 10 second timeout, where narration dies
+  silently. Raise it only if a single turn can exceed it.
 - `narrate on` / `narrate off` — set `narrate`. On, the text written along the
   way is also spoken, just before each tool call, not only the final answer.
 - `tools on` / `tools off` — set `announceTools`. On, you hear briefly which
