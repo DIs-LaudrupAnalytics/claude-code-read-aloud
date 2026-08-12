@@ -126,6 +126,20 @@ def load_config():
 # the top of the measured range.
 PENDING_GRACE = 15.0
 
+# How far AFTER the marker protection still reaches. Without a ceiling here, one
+# pending entry that never gets cleared suspends ageing for the whole rest of
+# the turn, which is the failure protecting the entire queue produced in the
+# first place. A denied call is the ordinary way to strand one: it never reaches
+# PostToolUse, and Clear-PendingKind only retires it when another approval comes
+# along, so on a long turn where Claude works around the denial the daemon can
+# fall behind and then nothing ages out at all. The Stop hook and the next
+# prompt both clear it, but only at the END of the turn, which is too late.
+#
+# Two minutes is chosen against what legitimately arrives after a question: very
+# little. While something waits on an answer there is not much new to say, and
+# parallel calls narrate within seconds, not minutes.
+PENDING_SPAN = 120.0
+
 
 def pending_since(cfg):
     """When the OLDEST thing still waiting on the user was asked, or None.
@@ -679,7 +693,9 @@ def main():
             except OSError:
                 queued_at = time.time()
             age = time.time() - queued_at
-            protected = (asked is not None) and (queued_at >= asked - PENDING_GRACE)
+            protected = (asked is not None
+                         and queued_at >= asked - PENDING_GRACE
+                         and queued_at <= asked + PENDING_SPAN)
             if stale > 0 and age > stale and not protected:
                 try:
                     os.remove(os.path.join(QUEUE, items[0]))

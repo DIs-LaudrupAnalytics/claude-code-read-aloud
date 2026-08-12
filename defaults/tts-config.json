@@ -1,6 +1,7 @@
 {
     "enabled": false,
     "piperModel": "en_US-lessac-medium",
+    "pythonPath": "",
     "rate": 1.25,
     "volume": 100,
     "sentencePause": 0.35,

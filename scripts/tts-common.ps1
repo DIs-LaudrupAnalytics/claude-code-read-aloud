@@ -442,6 +442,148 @@ function Test-PiperReady($cfg) {
     return $true
 }
 
+# --- finding a Python that actually runs ------------------------------------
+# Launching a bare 'pythonw.exe' and trusting PATH is not safe on Windows. What
+# PATH offers first is usually the Microsoft Store app execution alias, a
+# zero-length stub that forwards to the real interpreter. It forwards perfectly
+# well from a console, which is what makes this so hard to see: 'python -c' at a
+# prompt works, so the interpreter looks fine. Started hidden and without a
+# console, as this plugin starts it, the stub can simply hang. Observed twice on
+# the first install day, both times reproducible: the stub sat at 16 MB and a
+# tenth of a second of CPU for hours while a second daemon did all the work.
+#
+# It cost nothing on the day only through luck of ordering. The stub hangs
+# BEFORE it reaches claim_singleton, so the lock never sees it and the real
+# daemon takes the lock instead. Had the stub won the lock first, it would hold
+# it while hung, and the result is total silence with an empty log, which is
+# indistinguishable from the plugin not being installed at all. That is the
+# worst failure mode available here, so it is worth this much code.
+#
+# A zero-length file is the precise signal. A real python.exe is a hundred-odd
+# kilobytes; an alias is exactly zero.
+function Test-RealInterpreter([string]$path) {
+    if (-not $path) { return $false }
+    try {
+        $f = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        return ($f.Length -gt 0)
+    } catch { return $false }
+}
+
+function Get-PyLauncherPath {
+    # Ask the Windows launcher where the genuine installations are.
+    #
+    # Bounded, and that is the point of doing it the long way round. This whole
+    # function exists because a stub started without a console can hang forever,
+    # and 'py.exe' is usually the same kind of stub. Calling it with '&' would
+    # stake the hook on it returning: Resolve-PythonExe is reached from
+    # UserPromptSubmit, which blocks the prompt, so a hang there costs the user
+    # ten seconds and then a killed hook. Waiting three seconds and walking away
+    # cannot do that.
+    #
+    # Note that the length test used everywhere else is no good as a guard here.
+    # 'py.exe' is zero bytes on the development machine and answers correctly
+    # anyway, so refusing to run stubs would remove the only thing that finds
+    # the real interpreter there.
+    $tmp = Join-Path $env:TEMP ('ttspy-' + [guid]::NewGuid().ToString('N') + '.txt')
+    try {
+        $p = Start-Process -FilePath 'py' -ArgumentList '-0p' -RedirectStandardOutput $tmp `
+                           -WindowStyle Hidden -PassThru -ErrorAction Stop
+        if (-not $p.WaitForExit(3000)) {
+            try { $p.Kill() } catch {}
+            Write-TtsLog 'python: the py launcher did not answer within 3 s, ignoring it'
+            return $null
+        }
+        $lines = @(Get-Content -LiteralPath $tmp -ErrorAction SilentlyContinue)
+    } catch {
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+
+    # The default installation is the one marked with an asterisk; fall back to
+    # every line if nothing is marked.
+    $pick = @($lines | Where-Object { $_ -match '\*' })
+    if ($pick.Count -eq 0) { $pick = $lines }
+    foreach ($line in $pick) {
+        if ($line -match '([A-Za-z]:\\[^\r\n]*?python(w)?\.exe)') {
+            $cand = $Matches[1]
+            # Prefer the windowless build sitting beside it: a console window
+            # flashing up on every daemon start is its own fault.
+            $w = $cand -replace 'python\.exe$', 'pythonw.exe'
+            if (Test-RealInterpreter $w) { return $w }
+            if (Test-RealInterpreter $cand) { return $cand }
+        }
+    }
+    return $null
+}
+
+function Resolve-PythonExe {
+    $cacheFile = Join-Path $script:TtsData 'python.path'
+
+    # 1. An explicit setting wins, and it is checked BEFORE the cache. Getting
+    #    that order wrong makes the setting useless in exactly the situation it
+    #    exists for: the automatic answer is a real interpreter that happens not
+    #    to have piper installed, so it is cached, the daemon dies at import,
+    #    and setting pythonPath to a working interpreter changes nothing because
+    #    the cache is consulted first. Somebody with an unusual layout, a
+    #    virtual environment, or a Python off PATH entirely needs a way to say
+    #    so that actually takes effect.
+    $override = ''
+    try {
+        $cfg = Get-TtsConfig
+        $override = [string](Get-TtsField $cfg 'pythonPath' '')
+    } catch {}
+    if ($override) {
+        if (Test-RealInterpreter $override) {
+            # Keep the cache honest rather than leaving a contradicting answer
+            # in it for whoever reads the data root later.
+            try { [System.IO.File]::WriteAllText($cacheFile, $override) } catch {}
+            return $override
+        }
+        Write-TtsLog ('pythonPath is set but is not a usable interpreter: ' + $override)
+    }
+
+    # 2. The cached answer. Resolution can cost a process launch, and this runs
+    #    in hooks that have ten seconds before they are killed.
+    try {
+        if (Test-Path -LiteralPath $cacheFile) {
+            $cached = ([System.IO.File]::ReadAllText($cacheFile)).Trim()
+            if (Test-RealInterpreter $cached) { return $cached }
+            # The interpreter moved or was uninstalled. Look again rather than
+            # failing on a stale answer.
+            Remove-Item -LiteralPath $cacheFile -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+
+    $found = $null
+
+    # 3. PATH first, before asking the launcher. 'pip install piper-tts' puts
+    #    piper into whichever interpreter is on PATH, so that is the one most
+    #    likely to be able to run the daemon. The launcher answers with the
+    #    system default instead, which on a machine carrying both a python.org
+    #    install and Anaconda is often a different interpreter and a different
+    #    set of packages. Preferring the launcher would silently move a working
+    #    install onto a Python without piper. Stubs are rejected here on their
+    #    own, so this step is safe to run first.
+    foreach ($name in @('pythonw.exe', 'python.exe')) {
+        $cands = @(Get-Command $name -All -ErrorAction SilentlyContinue | ForEach-Object { $_.Source })
+        foreach ($c in $cands) {
+            if (Test-RealInterpreter $c) { $found = $c; break }
+        }
+        if ($found) { break }
+    }
+
+    # 4. Nothing usable on PATH, which is the case this whole exercise started
+    #    from: PATH offered two zero-length Store aliases and nothing else.
+    if (-not $found) { $found = Get-PyLauncherPath }
+
+    if ($found) {
+        try { [System.IO.File]::WriteAllText($cacheFile, $found) } catch {}
+        Write-TtsLog ('python: using ' + $found)
+    }
+    return $found
+}
+
 function Start-PiperDaemon {
     $pidFile = Join-Path $script:TtsData 'piper.pid'
     if (Test-Path -LiteralPath $pidFile) {
@@ -453,8 +595,15 @@ function Start-PiperDaemon {
         Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
     }
     $daemon = Join-Path $script:TtsScripts 'piper-daemon.py'
-    $exe = 'pythonw.exe'
-    if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { $exe = 'python.exe' }
+    $exe = Resolve-PythonExe
+    if (-not $exe) {
+        # Deliberately loud, and deliberately not a fallback to the bare name.
+        # Handing the launch to a stub that may hang buys nothing: it produces
+        # exactly the silence this message exists to explain, and it would take
+        # the singleton lock with it. Failing here leaves one line saying why.
+        Write-TtsLog 'no speech: no usable Python found. Install Python 3 and pip install piper-tts, or set pythonPath in tts-config.json.'
+        return
+    }
     try {
         # The data root is passed as an argument. The daemon cannot work it out
         # for itself: it lives in the program directory, and it does not

@@ -257,6 +257,18 @@ fallback path the marker arrives 6.8 to 9.6 seconds after the announcement was
 queued, and without the allowance the listener would be told permission is
 needed but not what the command does.
 
+Protection also has a ceiling on how far *after* the marker it reaches, two
+minutes. Without one, a single entry that never gets cleared suspends ageing for
+the whole remainder of the turn, which is the failure protecting the entire
+queue produced in the first place. A denied call is the ordinary way to strand
+one: it never reaches `PostToolUse`, and `Clear-PendingKind` only retires it
+when another approval arrives, so on a long turn where Claude works around the
+denial nothing would age out at all. The `Stop` hook and the next prompt do
+clear it, but only at the end of the turn, which is too late to help. Two
+minutes is measured against what legitimately arrives after a question, which is
+very little: while something waits on an answer there is not much new to say,
+and parallel calls narrate within seconds.
+
 Because the protection is scoped, the window can be generous, and it is:
 `pendingHoldMs`, thirty minutes by default. The only thing a long window can
 preserve is the question and whatever followed it, so being wrong is cheap,

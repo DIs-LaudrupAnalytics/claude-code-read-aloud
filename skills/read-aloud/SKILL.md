@@ -51,6 +51,21 @@ user dictates them with Windows Voice Access while the speech is running.
   Hugging Face. Prefer `medium` over `high`: `high` runs only about 1.5 times
   faster than real time and pins a core for the whole utterance, while `medium`
   runs more than ten times faster with almost the same sound.
+- `python <path>` — set `pythonPath`, the interpreter used to run the daemon.
+  Empty by default, which means work it out automatically. Set it only when the
+  automatic answer is wrong: a virtual environment, a Python that is not on
+  `PATH`, or one that turns out not to have `piper-tts` installed.
+
+  Setting it is enough on its own. It is read before the cached answer in
+  `python.path`, so there is nothing to delete first.
+
+  The automatic search skips zero-length files, because what `PATH` offers first
+  on Windows is often a Microsoft Store alias stub rather than an interpreter.
+  Those forward correctly from a console, so `python -c` at a prompt looks fine,
+  but started hidden the way the daemon is started they can hang and never come
+  back. If `tts.log` says no usable Python was found, or the daemon dies with
+  `No module named 'piper'`, this is the setting that fixes it. The log names
+  the interpreter it settled on.
 - `voice <name>` — set `piperModel`. Must match a file in the voices directory.
 - `speed <n>` — set `rate`: a multiplier where `1.0` is normal, valid range
   `0.5` to `6.0`. Piper converts it to `length_scale`.
