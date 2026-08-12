@@ -25,7 +25,11 @@ try {
 
     $interval = [int](Get-TtsField $cfg 'waitIntervalMs' 3000)
     $maxMs    = [int](Get-TtsField $cfg 'waitMaxMs' 120000)
-    if ($interval -lt 500) { $interval = 500 }
+    # The floor is the length of the cue plus a little air. It used to be 500 ms,
+    # which the cue itself now exceeds: with a 1.1 s tone and a 250 ms minimum
+    # rest, anything under about 1350 ms could not be honoured, so the setting
+    # quietly stopped meaning what it said at the bottom of its own range.
+    if ($interval -lt 1500) { $interval = 1500 }
 
     # The ceiling is a safety line, not an expectation: if a hook stalls without
     # clearing the marker, the tone must die by itself rather than run until the
@@ -70,10 +74,15 @@ try {
     # just after this loop starts. The tone must not sound on top of them, and
     # it certainly must not take them for "speech has resumed" and shut itself
     # down before you have even heard what is being asked.
+    # Real elapsed time, not the sum of the sleeps. The cue itself now lasts 1.1 s
+    # because of the Bluetooth wake-up lead-in, and counting only the sleeps put
+    # the ceiling out by more than a third: 120 s of setting ran for about 164 s
+    # of tones.
+    $started = [datetime]::Now
     $spent = 0
     while ($spent -lt $maxMs) {
         Start-Sleep -Milliseconds 250
-        $spent += 250
+        $spent = [int](([datetime]::Now - $started).TotalMilliseconds)
         if (-not (Test-Mine)) { break }
         if (-not (Test-Talking)) { break }
     }
@@ -86,10 +95,17 @@ try {
     while ($spent -lt $maxMs) {
         if (-not (Test-Mine)) { $why = 'marker cleared'; break }
         if (Test-Talking)     { $why = 'speech resumed'; break }
+        # The cue plays synchronously and is no longer short, so its own length
+        # comes out of the interval rather than being added to it. Otherwise
+        # waitIntervalMs of 3000 produced a tone every 4.1 s, and the setting
+        # stopped meaning what it says.
+        $t0 = [datetime]::Now
         Play-Cue 'waiting' -Quiet
         $n++
-        Start-Sleep -Milliseconds $interval
-        $spent += $interval
+        $rest = $interval - [int](([datetime]::Now - $t0).TotalMilliseconds)
+        if ($rest -lt 250) { $rest = 250 }
+        Start-Sleep -Milliseconds $rest
+        $spent = [int](([datetime]::Now - $started).TotalMilliseconds)
     }
     if ($spent -ge $maxMs) { $why = 'time ceiling' }
     Write-TtsLog "waiting tone: done after $n tones ($why)"
