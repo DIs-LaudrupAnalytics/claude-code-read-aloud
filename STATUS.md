@@ -23,19 +23,26 @@
 
 ## Åbne tråde
 
-- [ ] **Rename to `claude-code-read-aloud`**, both the local folder, which still
-      reads `read-aload`, and the GitHub repository. The folder rename has to
-      happen outside a running session, and the workspace file is named after it.
-- [ ] **Decide who publishes it.** The remote currently points at a work account,
-      `DIs-LaudrupAnalytics`, and that name is in the manifests and the licence.
-      A personal accessibility tool may belong elsewhere.
-- [ ] **Run `claude --plugin-dir .`** from a fresh session. This is the last
-      untested path and the one users will take.
-- [ ] **Committed as `82c535e`, not yet pushed.** The GitHub repository has been
-      renamed and the remote points at it.
+- [ ] **Test the plugin the way a user installs it.** This is the next job and
+      the last untested path. From a fresh session:
+      `claude --plugin-dir "C:\Users\jave\OneDrive - DI\Documents\GitHub\read-aload"`,
+      then check that the six hooks fire, that `/read-aloud:read-aloud on` works,
+      and that the data directory is created under
+      `~/.claude/plugins/data/`. A voice model must be downloaded into its
+      `voices/` directory first, or you get silence and a line in `tts.log`.
+      This does not disturb the existing hooks in `~/.claude/hooks/tts/`.
+- [ ] **Rename the local folder** from `read-aload` to `claude-code-read-aloud`.
+      The GitHub repository is already renamed; only the directory on disk still
+      has the transposed name. It cannot be renamed from inside a running
+      session, and the `.code-workspace` file is named after it and can go.
+- [ ] **Ownership left as it is for now.** The repository sits under the work
+      account `DIs-LaudrupAnalytics`, which is also in the manifests and the
+      licence. Transferring later stays cheap because GitHub keeps redirects, but
+      it would mean editing those files and the README install line.
 
 ## Senest
 
 12 August 2026: verified the implementation against the source, split program
-from data, removed the dead code, translated everything to English, and wrote the
-packaging and documentation. See `sessionslog/2026-08-12.md`.
+from data, removed the dead code, translated everything to English, wrote the
+packaging and documentation, and pushed the first two commits. See
+`sessionslog/2026-08-12.md`.
