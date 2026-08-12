@@ -55,6 +55,11 @@ def resolve_data_root():
 DATA     = resolve_data_root()
 QUEUE    = os.path.join(DATA, "queue")
 CACHE    = os.path.join(DATA, "cache")
+# One file per thing the user is still being waited on: an approval or a
+# question. Written and cleared by the hooks; the daemon only reads it, to
+# decide whether it is safe to age speech out. See pending_since, and the stale
+# rule that uses it in main().
+PENDING  = os.path.join(DATA, "pending")
 PIDFILE  = os.path.join(DATA, "piper.pid")
 LOCKFILE = os.path.join(DATA, "piper.lock")
 STOPFLAG = os.path.join(DATA, "stop.flag")
@@ -108,6 +113,78 @@ def load_config():
     except (OSError, ValueError) as e:
         log("config unreadable: %s" % e)
         return {}
+
+
+# How far BEFORE the pending marker a queue item may have been written and still
+# count as belonging to it. Not a fudge factor: the hooks genuinely queue the
+# speech first on one path. On PermissionRequest the gap is the measured 0.86 to
+# 0.93 s, but on the Notification fallback, used by a Claude Code too old for
+# PermissionRequest, the marker lands 6.8 to 9.6 s after the announcement was
+# queued. An allowance that does not cover that path leaves the listener with
+# "Claude needs your permission to use Bash" and no description of what the
+# command actually does, which is the half that decides the answer. Sized above
+# the top of the measured range.
+PENDING_GRACE = 15.0
+
+
+def pending_since(cfg):
+    """When the OLDEST thing still waiting on the user was asked, or None.
+
+    Read straight from pending/ rather than tracked here, because the hooks own
+    that state and the daemon must not have an opinion of its own about who is
+    waiting: one file per open approval or question, keyed by tool_use_id.
+
+    A timestamp rather than a yes or no, because the stale rule needs to know
+    which speech the question applies to. Suspending ageing for the whole queue
+    was tried and is worse than the bug it fixed: a backlog queued BEFORE the
+    question sorts behind it and was then preserved too, so the answer arrived
+    followed by minutes of narration about work already done. Worse, the waiting
+    tone never sounded at all, because wait-loop.ps1 treats a non-empty queue as
+    speech and waits for it to drain. The listener got unbroken speech, which by
+    this plugin's central rule means "I am working", at the exact moment they
+    were the one holding things up. Protect only what was queued at or after the
+    moment the question was asked.
+
+    The OLDEST open entry, not the newest, and the choice is not free either
+    way. Two can be open at once on purpose: permission-request.ps1 retires a
+    previous approval but deliberately leaves an AskUserQuestion alone, because
+    a question can still be on screen when a parallel call asks for approval.
+    Anchoring on the newest meant a later approval moved the line forward and
+    retracted the protection from the earlier question, which was then dropped
+    at staleMs with its dialog still up: precisely the failure this exists to
+    stop. Anchoring on the oldest cannot do that. What it risks instead is an
+    entry that never got cleared holding the line open behind it, so speech
+    queued afterwards stops ageing. That is the lesser fault, it is bounded by
+    pendingHoldMs, and two things already cut it short: the Stop hook clears
+    pending/ at the end of every turn, and a new prompt empties the queue
+    outright.
+
+    The window is deliberately generous. Once the protection is scoped as above,
+    the only thing a long window can preserve is the question itself and
+    anything said after it, so the cost of being wrong is small, while the cost
+    of being too eager is dropping a question that is still on screen. Somebody
+    who steps away for ten minutes is the reason this plugin exists, and they
+    should still be told what is being asked when they come back.
+    """
+    try:
+        grace = float(cfg.get("pendingHoldMs", 1800000)) / 1000.0
+    except (TypeError, ValueError):
+        grace = 1800.0
+    cutoff = time.time() - grace
+    oldest = None
+    try:
+        for name in os.listdir(PENDING):
+            if not name.endswith(".txt"):
+                continue
+            try:
+                m = os.path.getmtime(os.path.join(PENDING, name))
+            except OSError:
+                continue
+            if m >= cutoff and (oldest is None or m < oldest):
+                oldest = m
+    except OSError:
+        pass
+    return oldest
 
 
 _lock_handle = None
@@ -567,12 +644,43 @@ def main():
             # a pile can build up, and then the whole stack is read out in a
             # row afterwards. Speech about something that happened two minutes
             # ago is no longer a help; it is noise on top of the present.
+            #
+            # Nothing is aged out while somebody is still being waited on. The
+            # rule is about relevance, not about time, and an unanswered
+            # question does not become irrelevant by sitting in the queue: it is
+            # still on screen and still needs an answer. Ageing it out was not
+            # theoretical. During the first install test an urgent item was
+            # dropped after 51 s because it had queued behind a long narration,
+            # and since the waiting tone runs off a separate marker it went on
+            # sounding regardless. That is the worst state this plugin can
+            # produce: a tone saying somebody is waiting on you, and no sentence
+            # saying what for. Two rules that are each right alone collided,
+            # because "never interrupt an utterance" is exactly what makes an
+            # urgent item wait long enough for "discard anything old" to throw
+            # it away.
+            #
+            # Keying on pending/ rather than on the '0-' prefix is deliberate,
+            # and the prefix was tried first. The question text from
+            # AskUserQuestion is queued as '1-' on purpose, since the narration
+            # leading into it has to be spoken first, so a prefix test protects
+            # the generic "Claude needs your permission" line and drops the
+            # actual question, which is the half that cannot be guessed from the
+            # tone.
+            #
+            # Only what was queued at or after the question is protected, not
+            # the whole queue. See pending_since for what protecting everything
+            # did instead, and for why the anchor is the oldest open entry.
+            # PENDING_GRACE covers the paths where the speech is queued before
+            # the marker it belongs to.
             stale = float(cfg.get("staleMs", 45000)) / 1000.0
+            asked = pending_since(cfg)
             try:
-                age = time.time() - os.path.getmtime(os.path.join(QUEUE, items[0]))
+                queued_at = os.path.getmtime(os.path.join(QUEUE, items[0]))
             except OSError:
-                age = 0.0
-            if stale > 0 and age > stale:
+                queued_at = time.time()
+            age = time.time() - queued_at
+            protected = (asked is not None) and (queued_at >= asked - PENDING_GRACE)
+            if stale > 0 and age > stale and not protected:
                 try:
                     os.remove(os.path.join(QUEUE, items[0]))
                 except OSError:

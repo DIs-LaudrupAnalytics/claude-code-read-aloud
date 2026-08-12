@@ -125,17 +125,25 @@ try {
     if ($isAsk) {
         $qtext = Get-QuestionSpeech $payload $askMode ([int](Get-TtsField $cfg 'askDescChars' 220))
         if ($qtext) {
-            # NOT -Priority: the narration just above is the lead-in to the
-            # question and has to come first. And not -Hold: no permission
-            # request is coming, so there is nothing to overtake.
-            Submit-Speech $qtext
-
             # From here it is your turn. The pending entry makes PostToolUse
             # stop the waiting tone the moment you have answered; without it the
             # tone would only stop the next time something was spoken. It is
             # keyed by tool_use_id, so another tool finishing in the meantime
             # cannot answer on your behalf.
+            #
+            # BEFORE the speech it belongs to, not after, and permission-request
+            # .ps1 writes its entry in the same order. The marker is what stops
+            # the daemon ageing this question out, and the daemon protects only
+            # what was queued at or after the marker, so a question queued first
+            # would fall outside its own protection. The window used to be
+            # microseconds and harmless; it is load-bearing now.
             Add-Pending ('q-' + [string]$payload.tool_use_id)
+
+            # NOT -Priority: the narration just above is the lead-in to the
+            # question and has to come first. And not -Hold: no permission
+            # request is coming, so there is nothing to overtake.
+            Submit-Speech $qtext
+
             Start-Waiting
         }
     }

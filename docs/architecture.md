@@ -216,6 +216,63 @@ Stale items, older than `staleMs`, are discarded rather than spoken. If the
 daemon has been down there is otherwise a backlog, and hearing about something
 that happened two minutes ago is noise on top of the present.
 
+The rule is suspended for speech queued at or after the moment `pending/` says
+the user was asked something. It is a rule about relevance rather than about
+age, and an unanswered question does not stop being relevant by waiting in the
+queue. The first install test produced the failure it now prevents: an urgent
+item queued behind a long narration was dropped after 51 seconds, and because
+the waiting tone runs off its own marker it carried on sounding, so the tone
+said somebody was waiting and nothing said what for. Two rules that are each
+correct alone collided, since never interrupting an utterance in progress is
+exactly what makes an urgent item wait long enough to be aged out.
+
+Keying on `pending/` rather than on the `0-` prefix is deliberate, and the
+prefix was tried first. The question text from `AskUserQuestion` is queued as
+`1-` on purpose, because the narration leading into it has to be spoken first,
+so a prefix test would have protected the generic permission line and dropped
+the question itself, which is the half that cannot be inferred from the tone.
+
+Protecting the whole queue rather than only what followed the question was also
+tried, and it is worse than the bug it fixes. A backlog queued *before* the
+question sorts behind it and was preserved too, so the answer was followed by
+minutes of narration about work already finished. Worse, the waiting tone never
+sounded at all: `wait-loop.ps1` counts a non-empty queue as speech and waits for
+it to drain, so the listener got unbroken speech, which by the central rule
+means "I am working", at the exact moment they were the one holding things up.
+The scoping is what keeps that from happening, and it is why
+`narrate-preamble.ps1` now writes the pending entry *before* the question it
+protects, matching what `permission-request.ps1` already did. Queued first, the
+question would fall outside its own protection.
+
+The anchor is the oldest open entry rather than the newest, because two can be
+open at once by design: an approval request retires a previous approval but
+leaves an `AskUserQuestion` alone, since a question can still be on screen when
+a parallel call asks for permission. Anchored on the newest, a later approval
+moved the line forward and retracted the earlier question's protection, so the
+question was discarded with its dialog still up. Anchored on the oldest, the
+risk is instead an uncleared entry holding the line open behind it, which is the
+lesser fault and is bounded by `pendingHoldMs`. Speech queued shortly *before*
+its marker is covered too, by a fifteen second allowance: on the `Notification`
+fallback path the marker arrives 6.8 to 9.6 seconds after the announcement was
+queued, and without the allowance the listener would be told permission is
+needed but not what the command does.
+
+Because the protection is scoped, the window can be generous, and it is:
+`pendingHoldMs`, thirty minutes by default. The only thing a long window can
+preserve is the question and whatever followed it, so being wrong is cheap,
+while being too eager means dropping a question that is still on screen.
+Somebody who steps away for ten minutes is who this plugin is for, and they
+should still be told what is being asked when they come back. A stranded entry
+cannot hold it open indefinitely: the `Stop` hook clears `pending/` at the end
+of every turn, and a new prompt empties the queue outright.
+
+The `Stop` hook clears the pending entries and the waiting marker for the same
+reason it clears the running markers: a call that never reaches `PostToolUse`
+strands its state, and a stranded pending entry keeps the tone sounding. This
+does not cover dismissing a question with Escape, because Claude Code appears
+not to run `Stop` when a turn ends as a user interrupt. That is untested rather
+than settled.
+
 Duplicate speech is prevented by a per-session watermark in `state/`, recording
 the `uuid` of every entry already spoken. One answer can trigger several tool
 calls, so `PreToolUse` fires repeatedly over the same content.

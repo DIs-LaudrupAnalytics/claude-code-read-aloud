@@ -25,6 +25,37 @@ try {
     # announcing a command that finished long ago.
     Clear-AllRunningMarkers
 
+    # The turn is over, so nothing is waiting on an answer either. Same argument
+    # as the running markers above: a call that never reaches PostToolUse leaves
+    # its pending entry behind, and while that entry exists the waiting tone
+    # keeps sounding, up to its own waitMaxMs ceiling or until the next prompt.
+    # The case this covers is a turn that ends normally with an entry stranded,
+    # a denial Claude then works around being the ordinary one.
+    #
+    # It does NOT cover dismissing a question with Escape, which is what
+    # prompted the change. Claude Code appears not to run the Stop hook when the
+    # turn ends as a user interrupt, so this code never executes on that path.
+    # Left unverified rather than guessed at: it needs somebody to press Escape
+    # at a live prompt and watch whether the tone stops at once or runs to the
+    # ceiling. If it runs to the ceiling, the fix belongs somewhere that fires
+    # on an interrupt, and there may be no such hook.
+    #
+    # Safe to do here: the Stop hook fires when the turn has ended, which cannot
+    # happen while a question or an approval is still on screen. Anything still
+    # in pending/ at this point has been answered, denied or abandoned.
+    #
+    # That reasoning holds for THIS session only. Neither call is scoped by
+    # session_id, so with two sessions sharing a data root one ending its turn
+    # stops the other's waiting tone while its approval is still on screen. That
+    # is the known concurrency limitation, not a new one: transcript.path,
+    # working.flag and waiting.flag are already shared the same way, and the fix
+    # is the same fix, keying the flags by session. Recorded here because
+    # Stop-Waiting is the one that produces silence at the wrong moment, which
+    # is worse than the others, and because it makes the case for doing that
+    # work stronger than it was.
+    Clear-AllPending
+    Stop-Waiting
+
     $raw = [Console]::In.ReadToEnd()
     if ([string]::IsNullOrWhiteSpace($raw)) { exit 0 }
     $payload = $raw | ConvertFrom-Json

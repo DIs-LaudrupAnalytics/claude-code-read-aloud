@@ -9,6 +9,7 @@
     "minChars": 0,
     "maxChars": 100000,
     "staleMs": 45000,
+    "pendingHoldMs": 1800000,
     "idleTimeout": 1800,
     "cacheMaxFiles": 300,
     "cacheMaxMb": 30,

@@ -78,6 +78,17 @@ user dictates them with Windows Voice Access while the speech is running.
   discarded rather than spoken. If the daemon has been down there is otherwise a
   pile waiting, and speech about something that happened two minutes ago is
   noise on top of the present. `0` disables discarding.
+
+  With one exception: nothing queued from the moment you were asked something is
+  discarded, however long it waited, because a question you have not answered is
+  still on screen and has not gone out of date. Anything queued before that
+  still ages out normally.
+- `pendinghold <ms>` — set `pendingHoldMs`, default `1800000`, thirty minutes:
+  how long that exception can last. It is a backstop for an approval or a
+  question whose record was never cleared, not something to tune for comfort.
+  Long on purpose, because it only ever preserves the question and what came
+  after it, and someone who steps away for ten minutes should still be told what
+  is being asked when they get back.
 - `cachefiles <n>` / `cachemb <n>` — set `cacheMaxFiles` (default `300`) and
   `cacheMaxMb` (default `30`): the ceiling on the synthesis cache, pruned oldest
   use first while the queue is idle. Caching assumes short messages repeat word
