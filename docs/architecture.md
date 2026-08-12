@@ -344,10 +344,32 @@ and its stopping is the acknowledgement.
 
 ## The language directive
 
-`tts-prompt.ps1` injects a directive on every prompt, derived from `enabled` and
-`switchLanguage`. That is the only place the language is decided, which is why a
-change takes effect immediately with no restart. Do not add a `language` key to
-`settings.json`: two sources of truth would eventually disagree.
+`tts-prompt.ps1` injects a directive on every prompt. That is the only place the
+language is decided, which is why a change takes effect immediately with no
+restart. Do not add a `language` key to `settings.json`: two sources of truth
+would eventually disagree.
+
+There are three cases, and they are three because speech and the language split
+are separate switches. With speech on and `switchLanguage` on, the terminal reply
+follows `spokenLanguage` while everything written to disk stays
+`writtenLanguage`. With speech on and the split off, one language governs both,
+and it is `writtenLanguage`. With speech off, the same single language applies
+and the directive says so. An earlier version tested the two switches together,
+so a speaking session with the split off was told the voice was off. That branch
+also drops the request for flowing prose, and the visible symptom was an ASCII
+table read aloud.
+
+"Speech on" here means the config says so, `Test-PiperReady` agrees, and
+`Resolve-PythonExe` finds an interpreter. All three, because each one alone is
+survivable and the combination is not: the directive would announce a voice, ask
+for prose rather than tables and switch the reply into `spokenLanguage` while the
+user heard nothing at all. The Python half is the failure recorded as B8, where
+the model is on disk and `PATH` offers only a Store alias stub.
+
+One case still escapes it. A real interpreter without `piper-tts` installed
+passes both checks and dies at import inside the daemon, so only `tts.log` shows
+it. Detecting that from a hook means running Python on every prompt, which costs
+seconds where there are none to spare.
 
 ## Removed on purpose
 

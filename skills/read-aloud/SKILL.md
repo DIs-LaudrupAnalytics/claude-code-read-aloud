@@ -190,7 +190,11 @@ user dictates them with Windows Voice Access while the speech is running.
   effect immediately with no restart.
 
 Edit the JSON file directly and confirm briefly what changed. The confirmation
-follows the same language rule as everything else: `writtenLanguage` when speech
-is off, `spokenLanguage` in the terminal when it is on.
+follows the same language rule as everything else, and there are three cases, not
+two: `spokenLanguage` in the terminal when speech is on and `switchLanguage` is
+on, `writtenLanguage` when speech is on and the split is off, and
+`writtenLanguage` when speech is off. Take the rule from the directive the
+`UserPromptSubmit` hook injected on this very prompt rather than from memory. It
+already states the answer, and it cannot disagree with itself.
 
 For how the pieces fit together, see `docs/architecture.md` in the repository.

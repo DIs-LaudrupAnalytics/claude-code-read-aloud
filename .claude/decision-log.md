@@ -27,6 +27,7 @@ Operational rules that follow from these decisions are stated as invariants in
 | B7 | 2026-08-12 | Speech belonging to an open question is never aged out; the stale rule keys on `pending/`, not on age alone | besluttet |
 | B8 | 2026-08-12 | The daemon is started only on a verified real interpreter, never a bare name from `PATH` | besluttet |
 | B9 | 2026-08-12 | The data root name is whatever the harness computes; it is read from `data.path` and never renamed by hand | besluttet |
+| B10 | 2026-08-12 | A new prompt cuts speech off at once; the only deliberate exception to "never interrupt an utterance" | besluttet |
 
 ## Detaljer
 
@@ -250,3 +251,29 @@ directory nothing reads, a language split silently reset, and silence as the
 only symptom. The README already says not to guess the directory and to read
 `data.path` instead; this entry records that the advice binds the maintainers
 too, since the cutover was done by guessing while the README said otherwise.
+
+### B10 — A new prompt cuts speech off at once (2026-08-12)
+
+**Kontekst:** The plugin holds a strict rule against interrupting: an utterance
+that has started is always finished. An early version let an approval question
+break in between two sentences, and although it worked mechanically, a sentence
+cut mid-thought was heard as a fault rather than as a signal. The rule as stated
+in `CLAUDE.md` is unconditional, and read literally it forbids what
+`tts-prompt.ps1` does at the top of every prompt.
+
+**Beslutning:** The user's own prompt is the exception, and the only one. The
+`submitted` cue is played first and synchronously, then `Stop-AllSpeech` writes
+the stop flag and empties the queue, so the previous turn's narration dies
+immediately rather than talking over what comes next. Confirmed as wanted from
+live use on 2026-08-12.
+
+**Konsekvens:** The rule against interrupting is about the plugin cutting itself
+off. This is the opposite: the listener cutting the plugin off, and the two are
+not the same event. Typing is proof that the user has read ahead and is done
+listening, so finishing the sentence would be talking to nobody, and the queued
+remainder of a long turn would then delay everything about the new one. Anyone
+reading the invariant literally will find this and think it a bug. It is not.
+Do not make the prompt path wait for the current utterance, and do not soften
+the cut into a fade or a queue drain that lets the sentence finish. The cue
+stays before the stop, so the acknowledgement is heard even when it lands on top
+of the last word being cut.

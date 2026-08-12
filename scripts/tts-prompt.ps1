@@ -51,7 +51,24 @@ Stop-AllSpeech
 # AFTER Stop-AllSpeech, not before: the stop flag is written in there, and a
 # daemon that started first would read it as an order to be quiet.
 $cfgWarm = Get-TtsConfig
-if ($cfgWarm -and $cfgWarm.enabled -and (Test-PiperReady $cfgWarm)) { Start-PiperDaemon }
+# One answer, used twice: it decides whether to start the daemon here, and
+# whether section 3 may tell Claude that a voice is listening. The name is the
+# whole condition on purpose, switch included, because -and short circuits and
+# this says nothing about an installed voice when speech is simply switched off.
+#
+# Resolve-PythonExe is part of the question, not an extra. Test-PiperReady only
+# proves the model and its sidecar are on disk. The failure recorded as B8 gets
+# that far and then finds nothing but a Store alias stub, so without this check
+# the directive would announce a voice, ask for prose over tables and switch the
+# reply into spokenLanguage while the user hears nothing whatsoever. That is the
+# fault this section exists to prevent, one step further down the chain.
+#
+# It still cannot see everything. A real interpreter without piper-tts installed
+# passes here and dies at import in the daemon, and only the log shows it. Short
+# of running Python from a hook, which costs seconds on every prompt, that one
+# stays out of reach.
+$canSpeak = [bool]($cfgWarm -and $cfgWarm.enabled -and (Test-PiperReady $cfgWarm) -and (Resolve-PythonExe))
+if ($canSpeak) { Start-PiperDaemon }
 
 # --- 2b2. tell the loops where the transcript is ----------------------------
 # The pointer used to be written only by the PreToolUse hook, so in a turn with
@@ -91,21 +108,22 @@ try {
 Start-Working
 
 # --- 3. decide the language directive ---------------------------------------
-$speaking = $false
-$switch   = $true
-$spoken   = 'English'
-$written  = 'English'
-try {
-    $cfgPath = Join-Path $root 'tts-config.json'
-    if (Test-Path -LiteralPath $cfgPath) {
-        $cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $names = $cfg.PSObject.Properties.Name
-        if ($names -contains 'enabled')        { $speaking = [bool]$cfg.enabled }
-        if ($names -contains 'switchLanguage') { $switch   = [bool]$cfg.switchLanguage }
-        if ($names -contains 'spokenLanguage') { $spoken   = [string]$cfg.spokenLanguage }
-        if ($names -contains 'writtenLanguage'){ $written  = [string]$cfg.writtenLanguage }
-    }
-} catch {}
+# Speech is not what the config says on its own: it is the config AND everything
+# needed to act on it, which section 2b has already established.
+$speaking = $canSpeak
+
+# $cfgWarm, not a second read of the same file. Reading it twice in one hook let
+# the two halves describe different configs whenever the file was rewritten in
+# between, which the read-aloud skill does and a second session sharing the data
+# root can do at any moment.
+#
+# The fallbacks are the shipped values in defaults/tts-config.json. A key is
+# missing only from a config that was hand edited or truncated, since
+# Initialize-TtsData writes the defaults whole; landing such a config on the
+# shipped default is the least surprising thing available.
+$switch  = [bool](Get-TtsField $cfgWarm 'switchLanguage' $false)
+$spoken  = [string](Get-TtsField $cfgWarm 'spokenLanguage' 'English')
+$written = [string](Get-TtsField $cfgWarm 'writtenLanguage' 'English')
 
 # The language split is the reason this hook injects context at all. A voice
 # model reads one language well and everything else badly, but the language you
@@ -116,6 +134,16 @@ try {
 # Note that there is no 'language' key in settings.json. The language is decided
 # here and nowhere else, which is why a change takes effect immediately with no
 # restart. Do not add a settings key for it: the two would contradict each other.
+
+# Three cases, not two. Speech and the language split are separate switches, and
+# an earlier version tested them together: with the split off, a speaking session
+# fell through to the "voice output is OFF" branch. Two faults at once. It told
+# Claude the wrong thing about the state of the session, and it dropped the
+# request for flowing prose, so a session that was being read aloud answered with
+# an ASCII table. A table is unlistenable, and nothing in the reply explained why
+# it had arrived. The prose request belongs to speech being on, not to the split.
+$prose = "Prefer flowing prose over dense tables and long code blocks in the terminal reply, since it is heard rather than read."
+
 if ($speaking -and $switch) {
     $ctx = "Voice output is ON: your reply is read aloud by a $spoken text-to-speech voice. " +
            "Write the conversational reply in the terminal in $spoken, so it is spoken naturally. " +
@@ -123,7 +151,17 @@ if ($speaking -and $switch) {
            "chart titles, axis labels and annotations, CSV headers, markdown documents, and commit messages. " +
            "Use correct $written orthography including all diacritics in everything written to disk. " +
            "Leave code identifiers, file paths and technical terms unchanged. " +
-           "Prefer flowing prose over dense tables and long code blocks in the terminal reply, since it is heard rather than read."
+           $prose
+} elseif ($speaking) {
+    # Split off: one language for everything, and it is writtenLanguage, which is
+    # what the skill documents. The voice reads it whether or not the model is a
+    # good match for that language, since the alternative is silently overriding
+    # a switch the user turned off on purpose.
+    $ctx = "Voice output is ON: your reply is read aloud by a text-to-speech voice. " +
+           "Write everything in ${written}, both the terminal reply and anything written to disk, " +
+           "with correct $written orthography including all diacritics. " +
+           "Leave code identifiers, file paths and technical terms unchanged. " +
+           $prose
 } else {
     $ctx = "Voice output is OFF: reply in $written, with correct $written orthography including all diacritics."
 }
