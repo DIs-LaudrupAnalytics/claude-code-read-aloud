@@ -27,7 +27,10 @@ Operational rules that follow from these decisions are stated as invariants in
 | B7 | 2026-08-12 | Speech belonging to an open question is never aged out; the stale rule keys on `pending/`, not on age alone | besluttet |
 | B8 | 2026-08-12 | The daemon is started only on a verified real interpreter, never a bare name from `PATH` | besluttet |
 | B9 | 2026-08-12 | The data root name is whatever the harness computes; it is read from `data.path` and never renamed by hand | besluttet |
-| B10 | 2026-08-12 | A new prompt cuts speech off at once; the only deliberate exception to "never interrupt an utterance" | besluttet |
+| B10 | 2026-08-12 | A new prompt cuts speech off at once; the only deliberate exception to "never interrupt an utterance" | besluttet; 2026-08-12 udvidet af B11 og B12, så undtagelsen er "lytteren handler" med fire veje |
+| B11 | 2026-08-12 | Answering a question silences that question's speech and nothing else, through `skip.flag` and a per-call tag | besluttet |
+| B12 | 2026-08-12 | Where Claude Code emits no event for a user action, the transcript is the signal | besluttet |
+| B13 | 2026-08-12 | Cue tones open with an inaudible lead-in, because a Bluetooth link sleeps between sounds | besluttet |
 
 ## Detaljer
 
@@ -277,3 +280,115 @@ Do not make the prompt path wait for the current utterance, and do not soften
 the cut into a fade or a queue drain that lets the sentence finish. The cue
 stays before the stop, so the acknowledgement is heard even when it lands on top
 of the last word being cut.
+
+### B11 — Answering a question silences that question, and nothing else (2026-08-12)
+
+**Kontekst:** Speech lags the screen by design, since nothing is ever
+interrupted. The consequence in use is that you answer a question and then go on
+hearing it read out, describing a decision you have already made and delaying
+whatever comes next. The obvious lever was the stop flag, which the plugin
+already had, and it is the wrong one: a stop empties the backlog with the
+utterance, and Claude Code queues a second question directly behind the first, so
+stopping would silence exactly what the listener is waiting for. The wish was
+stated precisely by the user: answering question one should stop question one and
+leave question two audible.
+
+**Beslutning:** A separate `skip.flag` that ends ONE utterance. The speech
+belonging to a question is queued with a tag, the daemon writes the tag of what
+it is currently speaking into `speaking.flag`, and the flag carries the tag it is
+aimed at. The daemon compares the two before purging anything. Nothing else in
+the queue is touched, so the narration leading up to the question survives.
+
+Silencing is keyed to one CALL, never to a tool name, and that distinction is
+the whole entry. Doing it inside `Remove-Pending` was the first attempt: that
+function is also handed the tool-name fallback key, because `PermissionRequest`
+carries no `tool_use_id` (B6), so an auto-approved Bash finishing would cut off
+the question about a different Bash whose dialog was still on screen. Tone and
+speech therefore use different keys on purpose: the pending entry stays broad,
+since a tone left running is the cheaper error, and the speech carries either the
+`tool_use_id` or a signature of the tool name plus a hash of `tool_input`.
+
+**Konsekvens:** Three things a later session will want to tidy and must not. The
+tag and the pending key are deliberately different strings on the fallback path.
+The tag comparison in the daemon is not belt and braces: without it, an answer
+arriving as the queue moves on cuts off the following, unanswered question, which
+is worse than the fault being fixed. And `Stop-AllSpeech` has to clear a stale
+skip flag, because the daemon consumes it only while playing and the stop check
+returns before reading it.
+
+Two limits are accepted and recorded in `STATUS.md`: two concurrent calls with
+byte-identical input share a signature, and the `Notification` fallback path stays
+untagged, because its only key is shared and silencing on it would cut whichever
+question happened to be open. A mismatch anywhere degrades to the old behaviour,
+where the question finishes being read, which is the safe direction.
+
+### B12 — Where there is no event, the transcript is the signal (2026-08-12)
+
+**Kontekst:** Two wishes were blocked on the same unknown: stopping speech when
+the user dismisses a question, and stopping it on `/clear`. Both were held open
+across sessions pending the answer to "what does Claude Code emit when the user
+acts?". Settled by reading the hooks documentation for this version and then
+testing live. The answer is mostly nothing. Answering a question is covered,
+because answering runs the tool and `PostToolUse` fires. Dismissal emits nothing;
+`PermissionDenied` covers auto mode denials, `PostToolUseFailure` covers a tool
+that ran and errored, and `Stop` does not run on an interruption. `/clear` was
+the exception in the other direction: it submits no prompt, so
+`UserPromptSubmit` never runs, but `SessionStart` does fire with a `source` field.
+
+**Beslutning:** Use an event where one exists and the transcript where none does.
+`/clear` gets a `SessionStart` hook matched on `clear` alone. An interruption is
+detected from the `[Request interrupted by user]` entry in the transcript, in
+`work-loop.ps1`, which already read it for another purpose. Both then treat the
+moment the same way a new prompt is treated, because in all three the listener has
+finished with the whole turn.
+
+**Konsekvens:** Reading the transcript to infer a user action is now an accepted
+technique here rather than a workaround, and the price is stated where it is paid.
+Detection lags by the 2 s poll. It lives in the loop that reports progress, so an
+unrelated setting gates it: with the working messages off, Escape silences
+nothing. And ownership has to be re-checked immediately before acting, because the
+transcript entry is a level rather than an edge: it stays the last line until the
+next prompt is appended, so Escape followed by typing could otherwise silence the
+turn that had just begun.
+
+The matcher on `SessionStart` is `clear` and nothing else. `startup`, `resume` and
+`fork` have nothing of their own to silence and would cut off a second window
+sharing the data root; automatic compaction arrives mid-turn and would be the
+plugin interrupting itself, and a hand typed `/compact` cannot be told apart from
+it. `clear` carries the same cost against a second window and the file says so:
+accepted because clearing is deliberate and rare.
+
+### B13 — Cue tones open with an inaudible lead-in (2026-08-12)
+
+**Kontekst:** The waiting tone had never been audible. It was raised twice on the
+assumption that the level was wrong, from 0.30 amplitude and 110 ms to 0.50 and
+200 ms, and neither helped. The log showed the file being played every time. The
+deciding experiment was to play the same file from a console, where it was heard,
+and from the hidden loop, where it was not: the listener is on Bluetooth. An A2DP
+link powers down after a few seconds of silence and takes up to a second to come
+back, so a 200 ms tone is over before the headset is receiving. Speech survives
+this by losing only its opening; a short tone is lost whole.
+
+**Beslutning:** The cue opens with 0.9 s of the same note at an amplitude you
+cannot hear, which is signal enough to hold the link open, and then the beep at
+full level. Built as one continuous rising envelope, not two tones back to back:
+that version was audible but was heard as rough, because each segment faded to
+zero at its edges and the codec was handed a step in the moment before the beep.
+
+**Konsekvens:** A cue file is now five times longer than the sound it makes, which
+looks like a mistake and is not. The wait loop had to follow: real elapsed time
+instead of the sum of the sleeps, the cue's own length taken out of the interval
+rather than added to it, and an interval floor of 1500 ms, since anything shorter
+could no longer be honoured.
+
+Two prices are accepted for now and recorded in `STATUS.md`. At 0.01 the lead-in
+is not quite inaudible on headphones and is heard as a slow swell. And because the
+cue is played synchronously with the check for speech happening before it, the
+window in which a tone can land on top of speech grew from 0.2 s to over a second.
+Both are fixed by the same later change: a lead-in of digital silence, or a much
+lower amplitude, and splitting the cue in two so the loop can re-check between the
+lead-in and the beep.
+
+The `submitted` cue deliberately has no lead-in. It is heard every time, and it
+plays synchronously before the silencing (B10), so a lead-in would leave the
+previous turn talking almost a second longer after Enter.

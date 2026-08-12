@@ -2,185 +2,103 @@
 
 ## Hvor vi står
 
-- **Installed as a real plugin, cut over to, and confirmed in use.** The data
-  root is `~/.claude/plugins/data/read-aloud-read-aloud-tools`, which is the
-  plugin name joined to the marketplace name. The earlier guess of plain
-  `read-aloud` was wrong and the contents were moved across. A daemon runs
-  against it from the plugin's own cached copy and speaks. The six hooks are no
-  longer in `settings.json` and must not go back: both copies would fire.
-- **Read aloud is on**, with the language split and `waitTone: false` carried
-  over from the manual install. Ctrl+Alt+H works; the shortcut had to be
-  repointed at `~/.claude/read-aloud\hush.vbs` after the cutover renamed the old
-  install out from under it.
-- **Both leftover data roots are deleted** and about 245 MB came back.
-- **The language directive has three cases, not two, and is gated on the voice
-  model.** `tts-prompt.ps1` no longer tells a speaking session that the voice is
-  off when `switchLanguage` is off, and no longer announces a voice when
-  neither the voice model nor a usable Python is there. `$switch` now defaults to
-  the shipped `false` rather than `true`, and the config is read once per prompt
-  rather than twice. Two review rounds, eight findings, all acted on. Exercised
-  across five configurations through the real hook, including the B8 case where
-  the model is present and `PATH` offers no interpreter.
-- **The install path is tested.** A session that had never seen the plugin
-  provisioned its own data root, loaded the voice and spoke.
-- **Two faults found by that test are fixed, reviewed and pushed.** `ee7a9f6`
-  stops speech belonging to an open question being aged out (B7). `87850c3`
-  stops the daemon being started on a Store alias stub that hangs (B8).
-- **`PermissionRequest` carries no `tool_use_id`.** Confirmed from the log, twice.
-  The fallback to the tool name was written for this, so nothing needs changing.
-- **Tested:** every script parses, the Python compiles, everything is pure ASCII,
-  manifests validate. 19 regression assertions on the stale rule and 4 on the
-  interpreter resolver, both in the scratchpad rather than the repository, since
-  there is still no test framework here.
+- **Installed as a plugin at `0.2.0`, commit `2bb7bd9`, and in daily use.** The
+  data root is `~/.claude/plugins/data/read-aloud-read-aloud-tools`: the plugin
+  name joined to the marketplace name, read from `data.path` and never derived
+  (B9). The hooks must never go back into `settings.json`; both copies would fire.
+- **Seven hooks now.** `SessionStart` matched on `clear` was added today, because
+  `/clear` submits no prompt and nothing else in the plugin silences anything.
+  Registered in the installed copy but only active from the next session, since
+  hooks are read at startup. Untested for that reason.
+- **The plugin reacts when the user acts, in all four cases:** a new prompt,
+  `/clear`, Escape, and answering a question. The last one silences only that
+  question (B11); the other three silence everything. Three of the four were
+  verified live today.
+- **Config:** speech on, language split on, English spoken and Danish written,
+  `askAloud: labels` so the question is read in full and only the option
+  headlines follow, `waitTone: true`. Ctrl+Alt+H works.
+- **The waiting tone can be heard at last.** It was never a level problem: the
+  listener is on Bluetooth, and a 200 ms beep was over before the link woke. The
+  cue now opens with an inaudible 0.9 s lead-in (B13).
+- **Tested:** all four repository checks green. 22 regression assertions on tags,
+  queue, skip and signatures, and 10 on the daemon's tag parsing and skip flag,
+  both in the scratchpad since there is still no test framework here.
+- **Two review rounds today, fourteen findings, all answered:** six fixed, and the
+  rest recorded below with the fix and the reason for leaving it.
 
 ## Åbne tråde
 
-- [ ] **The tool announcement is heard before the text that preceded it on
-      screen.** `narrate-preamble.ps1` submits the narration at line 123 and the
-      announcement at line 160, both at normal priority, so the filename sort
-      should already keep them in that order. The likely cause is timing rather
-      than ordering: `PreToolUse` fires before the text block exists in the
-      transcript, so the hook narrates nothing, speaks the announcement, and the
-      text arrives on the next pass, after it. Unverified: it needs `tts.log`
-      from a live turn. Worth fixing rather than accepting, because the preamble
-      is usually where the reason for the action is, and that matters most when
-      the next thing is an approval.
-- [ ] **A background agent finishing is never spoken.** `/code-review` completed
-      and said nothing. `notify-permission.ps1` line 41 drops any notification
-      whose text does not match `permission|approve|allow|confirm`, and
-      `notifyFilter` is `permission`. Whether `all` would cover it depends on
-      Claude Code emitting a Notification event for a background task, which is
-      unverified. This is the case the whole design is for: silence means you are
-      up, and here silence meant the opposite.
-- [ ] **The event surface when the user acts: settled, and the answer was no.**
-      Established 12 August 2026 from the hooks documentation for this version
-      plus live tests. Answering a question is covered, because answering runs
-      the tool and `PostToolUse` fires. Everything else is not: no event fires
-      when a question is DISMISSED, `PermissionDenied` covers auto mode denials
-      only, `PostToolUseFailure` covers a tool that ran and errored, and Claude
-      Code does not run `Stop` on an interruption. `/clear` submits no prompt at
-      all, which is what the new `SessionStart` hook is for.
-      - **Confirmed live:** pressing Escape on an `AskUserQuestion` left the
-        speech reading to the end. Nothing stopped it but typing.
-      - **Fixed without an event:** `work-loop.ps1` already watched the
-        transcript for the `[Request interrupted by user]` entry, since that is
-        the only evidence there is, and used it only to stop reporting a dead
-        command. It now calls `Stop-AllSpeech`, so an interruption falls quiet
-        within the 2 s poll. An interruption is the listener acting, the same
-        class as a new prompt (B10), not the plugin cutting itself off.
-      - **Still open:** the poll is 2 s, which is a long time to hear a question
-        you have already dismissed. A faster poll costs a transcript read every
-        cycle for the whole turn. Worth measuring before tightening.
-      - **Still unread:** this version documents around thirty hook events
-        against the six the plugin was built for. `TaskCompleted`,
-        `SubagentStop`, `MessageDisplay` and `Notification`'s
-        `notification_type` (which includes `agent_completed`) are each a
-        candidate for one of the threads above and below. Names only so far; no
-        payload has been verified.
-- [ ] **An unreadable config is read as speech being switched off.** The daemon's
-      `load_config` returns `{}` on any failure, and `main` then sees
-      `enabled` missing and exits. Observed in the live log on 12 August 2026:
-      rewriting `tts-config.json` from a hook let the daemon read the file in the
-      moment it was empty, so it shut down and the next utterance paid for a
-      model reload. Two fixes, both cheap: keep the last good config on a read
-      failure rather than treating it as off, and write the config atomically
-      through a temporary file and a rename. The second one matters because the
-      read-aloud skill rewrites this file while the daemon is running.
-- [ ] **The waiting cue works now, but its lead-in is audible.** Settled on
-      12 August 2026: the tone was never inaudible because of its level. The
-      listener is on Bluetooth, the A2DP link powers down after a few seconds of
-      silence and takes up to a second to return, and a 200 ms beep was over
-      before the headset was receiving. Proved by playing the same file from a
-      console, where it was heard, and from the hidden loop, where it was not.
-      The cue now carries a 0.9 s lead-in of the same note at 0.01 amplitude,
-      built as one continuous rising envelope after a two-segment version was
-      heard as rough, and all four test tones were then heard. What remains is
-      that 0.01 is not inaudible on headphones: it is heard as a slow swell into
-      the beep. **Next thing to try:** a lead-in of literal digital silence, on
-      the theory that what wakes the link is the audio stream opening rather than
-      anything in it. If that fails, an amplitude around 0.0008. Kept as it is
-      for now on the user's decision, since it is audible, which it was not
-      before.
-- [ ] **The submitted cue has no wake-up lead-in, and by the Bluetooth argument it
-      should.** Raised by the review on 12 August 2026 and deliberately not
-      acted on. It plays at `UserPromptSubmit`, right after you have been typing
-      in silence, which is exactly the idle-link case. Left alone because it is
-      empirically heard every time, and because it plays synchronously BEFORE
-      `Stop-AllSpeech` by design (B10): a 0.9 s lead-in would mean the previous
-      turn's speech carried on for almost a second longer after you pressed
-      Enter. If it ever does go missing, the fix is known and the trade is the
-      latency.
-- [ ] **The waiting cue can now overlap speech by up to a second.** `Play-Cue` is
-      synchronous and `Test-Talking` is checked only before it starts, so with a
-      1.1 s cue, speech that begins during the lead-in gets the beep on top of
-      it. The window used to be 0.2 s, so the exposure is five times what it was,
-      and the review points out that the likeliest case is the one that matters
-      most: you approve, Claude resumes, and the beep lands on the first words of
-      the answer. Raised in both review rounds. Deferred on the user's decision
-      to move on, and it belongs with the other cue-shape work rather than being
-      fixed on its own. **The fix:** two files rather than one, so the loop plays
-      the inaudible lead-in, re-checks `Test-Talking`, and only then plays the
-      beep. Watch the smoothness when doing it: a two-segment version inside one
-      file was heard as rough.
-- [ ] **Two approval dialogs at once has never been verified.** The plugin has
-      assumed since the pending entries were written that Claude Code asks about
-      one approval at a time, and `Clear-PendingKind 'p'` now silences the retired
-      question's speech on that basis. If the assumption is wrong, a second
-      question would silence a first one that was still on screen. A log line was
-      added where it would show: `retired pending <key> after <n> ms`, and two
-      questions within a second or two of each other is the shape to look for.
-      Read the log after a batch of tool calls that needed several approvals.
-- [ ] **Two concurrent identical calls share one signature.** `Get-CallSignature`
-      is the tool name plus a hash of the tool input, since `PermissionRequest`
-      carries no `tool_use_id`, so two parallel calls with byte-identical input
-      collapse into one key and the first to finish silences the second's
-      question. Narrow: both calls must be the same tool, with identical input,
-      and both must need approval. Closing it properly means a side channel from
-      `PreToolUse`, which owns the id, to `PermissionRequest`, which does not, for
-      instance a `sig/<signature>.txt` file holding the id. Not worth the
-      machinery until the case is seen.
-- [ ] **Escape silencing is gated on the `working` setting.** It lives in
-      `work-loop.ps1`, the only process already watching the transcript, and that
-      loop runs only while `working.flag` exists. With `working` off, or after
-      `workingMaxMs`, Escape silences nothing. Both are on by default and both are
-      on here. A watcher of its own would fix it and is more machinery than the
-      case has earned.
+- [ ] **Test `/clear` in the next session.** The previous answer should stop dead,
+      and the log should show `session-start silenced: source=clear`.
+- [ ] **The tool announcement is heard before the text that preceded it on screen.**
+      Reproduced again today with an `AskUserQuestion`. `PreToolUse` most likely
+      fires before the text block reaches the transcript, so the hook narrates
+      nothing and the text is picked up on the next pass. `MessageDisplay` is the
+      candidate event. Worth fixing: the preamble is where the reason for an
+      action is, and that matters most when an approval follows.
+- [ ] **A background agent finishing is never spoken.** `/code-review` completed in
+      silence, twice. `notify-permission.ps1` drops notifications that do not
+      match `permission|approve|allow|confirm`. `TaskCompleted`, `SubagentStop`
+      and `Notification`'s `notification_type` (which includes `agent_completed`)
+      are the candidates. This is the case the whole design exists for.
+- [ ] **Around thirty hook events exist and the plugin uses seven.** Names read
+      from the documentation today; no payload verified beyond the ones in use.
+      Several open threads here are probably one event away.
+- [ ] **The cue lead-in is audible as a slow swell**, since 0.01 amplitude is not
+      inaudible on headphones, and the 1.1 s cue also widened the window where a
+      tone can land on top of speech from 0.2 s to over a second. Both belong to
+      the same piece of work. Next to try: a lead-in of digital silence, on the
+      theory that the link wakes when the stream opens rather than because of what
+      is in it; then 0.0008 amplitude. Then split the cue in two so the loop can
+      re-check for speech between the lead-in and the beep. Deferred on the user's
+      decision, since it is audible now, which it was not before.
+- [ ] **The `submitted` cue has no lead-in**, and by the same Bluetooth argument it
+      should. Left alone because it is heard every time, and because it plays
+      synchronously before the silencing (B10): a lead-in would leave the previous
+      turn talking almost a second longer after Enter.
 - [ ] **Speech may be losing its first word to the same cause.** Untested. A long
-      utterance survives a sleeping Bluetooth link by sacrificing its opening,
-      which would be heard as a clipped first word rather than as a fault, and
-      the daemon's 0.30 s tail margin has no counterpart at the start. Worth one
-      deliberate listen after a long silence before deciding whether it needs a
-      lead-in of its own.
-- [ ] **Mathematics is unlistenable.** Piper phonemises through espeak-ng and has
-      no notion of notation, so LaTeX arrives as a stream of symbol names and
-      fragments: `\frac{a}{b}` is read roughly as backslash, frac, brace, and is
-      impossible to follow. Inline `$...$` and display `$$...$$` are both
-      affected, and so is plain notation like `x^2` or `\alpha`. The place to fix
-      it is `ConvertTo-Speakable`, which already rewrites markdown, by
-      translating the common constructs into words before the text reaches the
-      voice: fraction a over b, x squared, alpha. Worth scoping before writing,
-      since the tail of LaTeX is infinite and the useful part is small: the few
-      dozen constructs that actually turn up in prose. Raised 12 August 2026.
+      utterance survives a sleeping link by sacrificing its opening, which sounds
+      like a clipped word rather than a fault. One deliberate listen after a long
+      silence would settle it.
+- [ ] **An unreadable config is read as speech being switched off.** `load_config`
+      returns `{}` on any failure and `main` then exits. Seen live today: a config
+      rewritten from a hook was read while empty, so the daemon shut down and the
+      next utterance paid for a model reload. Keep the last good config instead,
+      and write the file through a temporary and a rename.
+- [ ] **Escape silencing is gated on the `working` setting**, because it lives in
+      the only process that already reads the transcript, and that loop runs only
+      while `working.flag` exists. Both are on by default. A watcher of its own
+      would fix it and has not earned the machinery yet. The 2 s poll is also a
+      long time to hear a question you have dismissed.
+- [ ] **Two approval dialogs at once has never been verified**, and
+      `Clear-PendingKind 'p'` now silences the retired question's speech on the
+      assumption that it cannot happen. The log line `retired pending <key> after
+      <n> ms` is there to catch it: two retirements a second apart is the shape.
+- [ ] **Two concurrent identical calls share one signature.** `Get-CallSignature`
+      is the tool name plus a hash of `tool_input`, so two parallel calls with
+      identical input collapse and the first to finish silences the second's
+      question. Narrow. The fix is a side channel from `PreToolUse`, which owns
+      the id, to `PermissionRequest`, which does not.
+- [ ] **Mathematics is unlistenable.** Piper has no notion of notation, so LaTeX
+      arrives as symbol names. Fix it in `ConvertTo-Speakable`, which already
+      rewrites markdown, for the few dozen constructs that turn up in prose:
+      fraction a over b, x squared, alpha. Scope it before writing.
 - [ ] **Concurrent sessions are documented, not fixed.** Two sessions sharing a
       data root share `transcript.path`, `working.flag` and `waiting.flag`, and
-      each prompt sweeps the other's markers. `Clear-AllPending` and
-      `Stop-Waiting` in the `Stop` hook now join that family and are the worst
-      members, since they produce silence at the wrong moment. The fix is the
-      same for all of it: key the flags by `session_id`.
-- [ ] **Delete `~/.claude/hooks/tts.retired-2026-08-12`** when satisfied, plus
-      the two `.pre-plugin-test.bak` files beside `settings.json` and
-      `data.path`. Renamed rather than deleted on purpose, so anything still
-      pointing at the old path fails loudly. It did exactly that today.
+      each prompt sweeps the other's markers. `/clear` now joins that family and
+      says so in the file. The fix is the same for all of it: key by `session_id`.
+- [ ] **Delete `~/.claude/hooks/tts.retired-2026-08-12`** when satisfied, plus the
+      two `.pre-plugin-test.bak` files, and the now unused `0.1.0` plugin cache.
 - [ ] **Rename the local folder** from `read-aload` to `claude-code-read-aloud`.
       The GitHub repository is already renamed. It cannot be done from inside a
-      running session, and the `.code-workspace` file is named after it and can
-      go.
-- [ ] **Ownership left as it is for now.** The repository sits under the work
-      account `DIs-LaudrupAnalytics`, which is also in the manifests and the
-      licence. Transferring later stays cheap because GitHub keeps redirects.
+      running session, and the `.code-workspace` file can go with it.
+- [ ] **Ownership left as it is.** The repository sits under the work account
+      `DIs-LaudrupAnalytics`. Transferring later stays cheap: GitHub keeps
+      redirects.
 
 ## Senest
 
-12 August 2026: ran the first real install test, fixed the two faults it exposed,
-cut over to the plugin, then settled the data root name and cleared both
-leftovers. See `sessionslog/2026-08-12.md`.
+12 August 2026: four faults found in live use and fixed, `/clear`, answering a
+question, Escape, and a waiting tone that Bluetooth had been swallowing all along.
+Two review rounds, then `0.2.0` pushed and installed. See
+`sessionslog/2026-08-12.md`.
