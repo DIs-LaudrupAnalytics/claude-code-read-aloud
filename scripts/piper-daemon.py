@@ -63,6 +63,9 @@ PENDING  = os.path.join(DATA, "pending")
 PIDFILE  = os.path.join(DATA, "piper.pid")
 LOCKFILE = os.path.join(DATA, "piper.lock")
 STOPFLAG = os.path.join(DATA, "stop.flag")
+# Aimed at ONE utterance, and it holds the tag of the one it is aimed at. See
+# skip_requested for why that is not the same thing as the stop flag.
+SKIPFLAG = os.path.join(DATA, "skip.flag")
 # Exists only while speech is actually happening. The waiting tone reads it to
 # keep quiet in the meantime: a gentle tone on top of speech sounds like a fault,
 # not like a signal.
@@ -239,6 +242,60 @@ def clear_stop():
         pass
 
 
+# --- skipping one utterance, not all of them --------------------------------
+# The tag of whatever is being spoken right now, "" between items. Written into
+# the speaking marker as well, so the hooks can see it from outside the process.
+_current_tag = ""
+
+
+def queue_tag(name):
+    """The tag a queue file carries, or "" if it has none.
+
+    The name is <prefix>-<ticks>-<guid>[-t<tag>].txt. Prefix, ticks and guid
+    contain no hyphen, so splitting four ways puts the whole tag in the last
+    field however many hyphens the tag itself has, which p-Bash and q-toolu_01
+    both do."""
+    base = name[:-4] if name.endswith(".txt") else name
+    parts = base.split("-", 3)
+    if len(parts) < 4 or not parts[3].startswith("t"):
+        return ""
+    return parts[3][1:]
+
+
+def clear_skip():
+    try:
+        os.remove(SKIPFLAG)
+    except OSError:
+        pass
+
+
+def skip_requested(tag):
+    """True if a skip is waiting AND it is aimed at this utterance.
+
+    Deliberately a separate flag from the stop, because the two mean different
+    things. A stop means "be quiet", and it takes the backlog with it. A skip
+    means "I have already answered THAT question", and the next question is
+    usually queued directly behind the one being answered, so draining would
+    silence the very thing the listener is waiting to hear.
+
+    The tag comparison is what makes it safe to write the flag at all. Speech
+    lags the screen by design, so an answer can arrive in the moment the queue
+    moves on, and without the comparison the skip would then cut off the NEXT
+    question instead of the answered one: the exact failure it exists to
+    prevent, only worse, because that one has not been answered yet.
+
+    The flag is cleared whether it matched or not. A skip aimed at something
+    that has already finished is spent, and one left lying would take an
+    innocent utterance later on."""
+    try:
+        with open(SKIPFLAG, "r", encoding="utf-8") as f:
+            want = f.read().strip()
+    except OSError:
+        return False
+    clear_skip()
+    return bool(want) and want == tag
+
+
 def drain_queue(cutoff=None):
     """Throw away the backlog the stop was aimed at, and nothing newer.
 
@@ -395,9 +452,10 @@ def wav_duration(path):
 
 
 def play_interruptible(path):
-    """Play asynchronously and watch the stop flag along the way.
+    """Play asynchronously and watch the stop and skip flags along the way.
 
-    Returns False if silence was requested mid-playback.
+    Returns False if silence was requested mid-playback, or if this particular
+    utterance was skipped because the question it belongs to has been answered.
     """
     dur = wav_duration(path)
     try:
@@ -416,6 +474,13 @@ def play_interruptible(path):
                 winsound.PlaySound(None, winsound.SND_PURGE)
             except Exception:
                 pass
+            return False
+        if skip_requested(_current_tag):
+            try:
+                winsound.PlaySound(None, winsound.SND_PURGE)
+            except Exception:
+                pass
+            log("skipped: %s was answered" % _current_tag)
             return False
         time.sleep(0.05)
     return True
@@ -521,9 +586,28 @@ def speak(voice, text, syn, cfg, pause=0.35, dash_pause=None):
                 time.sleep(gap)
         first = False
         try:
-            play_interruptible(path)
+            played = play_interruptible(path)
         finally:
             discard(path)
+        if not played:
+            # A skip ends the WHOLE utterance, not the segment it landed in.
+            # The return value used to be thrown away, which was harmless while
+            # a stop was the only thing that produced it: the loop reads
+            # stop_requested at the top and discards the rest anyway. A skip
+            # leaves no flag behind to be read there, so without this the
+            # remaining sentences of an answered question carried on as if
+            # nothing had happened.
+            #
+            # The producer is told through abort, and what it has already
+            # synthesised is discarded here, or the WAV fragments would be left
+            # for sweep_orphans to find five minutes later.
+            abort.set()
+            while True:
+                rest = q.get()
+                if rest is None:
+                    break
+                discard(rest[0])
+            break
 
 
 def sweep_orphans():
@@ -557,6 +641,7 @@ def sweep_orphans():
 
 
 def main():
+    global _current_tag
     os.makedirs(QUEUE, exist_ok=True)
     os.makedirs(CACHE, exist_ok=True)
     if not claim_singleton():
@@ -571,6 +656,9 @@ def main():
     prune_cache(load_config())
     next_prune = time.time() + 600
     clear_stop()
+    # A skip aimed at an utterance that died with the previous daemon has
+    # nothing left to hit, and it would take the first thing this one says.
+    clear_skip()
     # A marker left behind by a killed daemon would make the waiting tone
     # believe speech was happening, and then it would never sound at all.
     try:
@@ -759,14 +847,23 @@ def main():
             dash_pause = float(cfg.get("dashPause", sent_pause))
             # Mark that speech is happening, while it happens. The waiting tone
             # uses it to stay quiet, and to notice that speech has resumed.
+            #
+            # The contents are the tag of what is being spoken, where it has
+            # one, and that is not decoration: it is the only way a hook can ask
+            # for THIS utterance to be skipped without risking the next one. The
+            # file used to hold a literal "x", and its existence is still all
+            # the waiting tone reads, so an empty file is a perfectly good
+            # answer for speech that belongs to no particular call.
+            _current_tag = queue_tag(items[0])
             try:
-                with open(SPEAKFLAG, "w", encoding="ascii") as f:
-                    f.write("x")
+                with open(SPEAKFLAG, "w", encoding="utf-8") as f:
+                    f.write(_current_tag)
             except OSError:
                 pass
             try:
                 speak(voice, text, make_syn_config(cfg), cfg, sent_pause, dash_pause)
             finally:
+                _current_tag = ""
                 try:
                     os.remove(SPEAKFLAG)
                 except OSError:

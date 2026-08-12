@@ -84,22 +84,44 @@ try {
     # tone would go on sounding while Claude worked. Only approvals are cleared;
     # an AskUserQuestion may legitimately still be open.
     Clear-PendingKind 'p'
+    # The key for the pending entry, which is what stops the waiting tone. It is
+    # deliberately as broad as the event allows, including the tool-name fallback,
+    # because a tone left running is the cheaper error and Clear-PendingKind
+    # sweeps a stale entry at the next question.
+    #
+    # The tag on the SPEECH is computed separately further down and is not the
+    # same string on the fallback path. That difference is the point: silencing on
+    # a key this broad let one call answer for another. Do not "tidy" the two back
+    # into one variable.
+    $pendKey = ''
     if ($callId) {
-        Add-Pending ('p-' + $callId)
+        $pendKey = 'p-' + $callId
+        Add-Pending $pendKey
     } else {
         # Logged, not silent. This is the weaker path: another call of the same
         # tool can clear the entry, and the held announcement is left to holdMs
         # instead of being released here. If this line never appears in your
         # log, the event carries an id and none of that applies.
         Write-TtsLog ('permission event carried no tool_use_id; keying on the tool name: ' + $toolKey)
-        Add-Pending ('p-' + $toolKey)
+        $pendKey = 'p-' + $toolKey
+        Add-Pending $pendKey
     }
 
     # And remember that the question has been spoken, so Notification can stay
     # quiet.
     try { [System.IO.File]::WriteAllText((Join-Path $root 'announced.flag'), 'x') } catch {}
 
-    Submit-Speech $text -Priority
+    # Tagged so answering it silences this question and only this question.
+    # Untagged, the only way to stop it was to stop everything, which would have
+    # taken the next question with it.
+    #
+    # The tag is NOT the pending key. The pending key may be no more specific
+    # than a tool name, and silencing on that let another call of the same tool
+    # cut off a question that was still on screen. The signature adds the tool
+    # input, which separates two calls of the same tool; without a payload there
+    # is no tag at all, and then the question simply finishes being read.
+    $speechTag = if ($callId) { 'p-' + $callId } else { Get-CallSignature $payload }
+    Submit-Speech $text -Priority -Tag $speechTag
 
     # The question is now queued as '0-'. Release the held tool announcement: it
     # becomes '1-' and therefore sorts BEHIND the question. The order is decided

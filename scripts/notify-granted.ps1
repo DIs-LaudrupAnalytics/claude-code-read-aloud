@@ -47,6 +47,21 @@ try {
     $callId = [string]$payload.tool_use_id
     if ($callId) { Release-HeldSpeech $callId }
 
+    # The question about THIS call is over, so whatever is left of it should not
+    # be read out. Unconditional on purpose: every key here identifies this one
+    # call, so the worst case is that there was nothing to silence.
+    #
+    # Explicitly here rather than inside Remove-Pending, which is also handed the
+    # tool-name fallback key. Silencing on that key let an auto-approved Bash
+    # finishing cut off the question about a different Bash while its dialog was
+    # still open and unanswered.
+    if ($callId) {
+        Stop-AnsweredSpeech ('q-' + $callId)
+        Stop-AnsweredSpeech ('p-' + $callId)
+    }
+    $sig = Get-CallSignature $payload
+    if ($sig) { Stop-AnsweredSpeech $sig }
+
     # This call is no longer running. If others are, their markers stay, and the
     # working message goes on reporting the oldest of them.
     if ($payload) { Clear-RunningMarker $payload }

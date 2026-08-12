@@ -788,6 +788,106 @@ function Release-HeldSpeech([string]$Tag) {
 # been answered or denied, and a denial is the case that matters: it never
 # reaches PostToolUse, so its entry would otherwise sit there and suppress the
 # next Stop-Waiting for as long as the stale sweep allows.
+function Remove-QueuedSpeech([string]$Tag) {
+    # Throw away anything still queued that belongs to ONE tool call.
+    #
+    # Speech lags the screen. By the time you have answered a question, the
+    # sentence describing it is often still waiting its turn, and reading it out
+    # afterwards is worse than saying nothing: it describes a decision you have
+    # already made, and it delays whatever comes next.
+    #
+    # Keyed by tag, never wholesale. Claude Code can have a second question
+    # queued directly behind the one you just answered, and that one still has
+    # to be heard. This is the same rule as everywhere else in this plugin:
+    # anything belonging to one call is keyed by that call.
+    if (-not $Tag) { return }
+    $safeTag = ($Tag -replace '[^A-Za-z0-9_-]', '')
+    if (-not $safeTag) { return }
+    $qdir = Join-Path $script:TtsData 'queue'
+    if (-not (Test-Path -LiteralPath $qdir)) { return }
+    Get-ChildItem -LiteralPath $qdir -Filter '*.txt' -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.Name -like ('*-t' + $safeTag + '.txt')) {
+            Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Skip-CurrentSpeech([string]$Tag) {
+    # Cut off the utterance being spoken right now, but only if it is the one
+    # belonging to this call.
+    #
+    # This bends the rule that an utterance in progress is always finished, and
+    # it bends it the same way B10 does for a new prompt: the exception is the
+    # LISTENER acting, never the plugin cutting itself off. Answering a question
+    # is proof that you have read ahead, exactly as typing is. Being read the
+    # rest of a question you have already answered is the thing this plugin is
+    # supposed to save you from.
+    #
+    # Not the stop flag, which would be the wrong tool twice over: it silences
+    # whatever is playing whoever it belongs to, and it drains the backlog with
+    # it, which is where the next question is sitting.
+    #
+    # The daemon compares the tag before it purges anything, so a skip that
+    # arrives just as the queue moves on is dropped rather than landing on an
+    # innocent utterance. Checking the marker here as well is not redundant: it
+    # keeps a flag from being written at all in the common case where the
+    # question has already finished being read, and a flag that is never written
+    # cannot go stale.
+    if (-not $Tag) { return }
+    $safeTag = ($Tag -replace '[^A-Za-z0-9_-]', '')
+    if (-not $safeTag) { return }
+    $now = $null
+    # ReadAllText, and a failure means no skip. The daemon writes this file at
+    # the moment it starts speaking, so a read can lose the race for it; the
+    # safe direction is to let the sentence finish.
+    try { $now = [System.IO.File]::ReadAllText((Join-Path $script:TtsData 'speaking.flag')) } catch { return }
+    if ($null -eq $now -or $now.Trim() -ne $safeTag) { return }
+    try { [System.IO.File]::WriteAllText((Join-Path $script:TtsData 'skip.flag'), $safeTag) } catch {}
+}
+
+function Get-CallSignature($payload) {
+    # A key that identifies ONE tool call even where the event carries no
+    # tool_use_id.
+    #
+    # `PermissionRequest` carries no id, confirmed twice in the log, so the tool
+    # name was all that was left to key on. That is enough for the waiting tone,
+    # where clearing the wrong entry costs a tone, but not for silencing speech,
+    # where it cost the question itself: a second Bash finishing answered for the
+    # Bash you were being asked about. The tool INPUT is what separates two calls
+    # of the same tool, and both hooks that need this key are handed the same
+    # `tool_input` for the same call.
+    #
+    # Two calls with identical input collapse to one signature. That is fine:
+    # they are the same command, so silencing either question says the same
+    # thing.
+    #
+    # A miss is harmless by construction. This key decides only what speech is
+    # silenced, never whether the tone stops, so if the two sides ever disagree
+    # the result is the old behaviour, which is that the question finishes being
+    # read.
+    if (-not $payload) { return '' }
+    $tool = [string]$payload.tool_name
+    if (-not $tool) { return '' }
+    $json = ''
+    try { $json = [string]($payload.tool_input | ConvertTo-Json -Depth 10 -Compress) } catch {}
+    $sha = $null
+    try {
+        $sha = [System.Security.Cryptography.SHA1]::Create()
+        $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($json))
+    } catch { return '' } finally { if ($sha) { $sha.Dispose() } }
+    $hex = -join ($bytes[0..3] | ForEach-Object { $_.ToString('x2') })
+    return ('p-' + $tool + '-' + $hex)
+}
+
+function Stop-AnsweredSpeech([string]$Key) {
+    # One question has been answered: silence what is left of it and nothing
+    # else. The order matters. Skipping first stops the sentence in the ear
+    # before the queue is touched, so the gap the listener hears is as short as
+    # it can be.
+    Skip-CurrentSpeech $Key
+    Remove-QueuedSpeech $Key
+}
+
 function Get-PendingDir {
     $dir = Join-Path $script:TtsData 'pending'
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -822,6 +922,16 @@ function Remove-Pending([string[]]$keys) {
                 Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
                 $hit = $true
             }
+            # Deliberately NOT silencing here, and this was tried the other way
+            # first. Some of the keys passed in are only as specific as a tool
+            # name, because PermissionRequest carries no tool_use_id, and a tool
+            # name is not a call. Silencing on a hit therefore let a second,
+            # auto-approved Bash finishing cut off the question about the FIRST
+            # Bash while its dialog was still on screen and unanswered: the tone
+            # went quiet and the sentence saying what was being asked
+            # disappeared, which is the worst state this plugin can produce. The
+            # callers silence explicitly, using keys that identify one call. See
+            # Get-CallSignature.
         }
     } catch {}
     return $hit
@@ -851,7 +961,32 @@ function Clear-PendingKind([string]$kind) {
         $dir = Join-Path $script:TtsData 'pending'
         if (Test-Path -LiteralPath $dir) {
             Get-ChildItem -LiteralPath $dir -Filter ($kind + '-*.txt') -ErrorAction SilentlyContinue |
-                Remove-Item -Force -ErrorAction SilentlyContinue
+                ForEach-Object {
+                    $key = $_.BaseName
+                    Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+                    # This is the denial case, and it is the only route to it.
+                    # A denied call never reaches PostToolUse, so nothing else
+                    # ever tells us that the question is over. The next question
+                    # arriving is the proof, since Claude Code asks about one
+                    # call at a time, and by then the old question's speech is
+                    # about a decision that has already been made.
+                    #
+                    # Safe to do before the new question is queued and not
+                    # after: an entry of this kind is by definition an older
+                    # one, and the tag it silences is its own.
+                    #
+                    # This rests on Claude Code asking about one approval at a
+                    # time, which the plugin has assumed since the pending
+                    # entries were introduced but has never actually verified. If
+                    # two dialogs can be open at once, retiring the first would
+                    # silence a question still on screen. The age is logged for
+                    # exactly that reason: two questions within a second or two
+                    # of each other is what the bad case would look like, and
+                    # then this line is the evidence.
+                    $age = [int](([datetime]::Now - $_.LastWriteTime).TotalMilliseconds)
+                    Write-TtsLog ("retired pending $key after $age ms and silenced its speech")
+                    Stop-AnsweredSpeech $key
+                }
         }
     } catch {}
 }
@@ -884,6 +1019,17 @@ function Stop-AllSpeech {
     # key, ends the approval you were being asked about as surely as answering
     # it would.
     Clear-AllPending
+
+    # A skip aimed at an utterance that this stop is about to kill has nothing
+    # left to hit, and the daemon only consumes the flag while it is playing:
+    # the stop check comes first and returns without reading it. Left on disk it
+    # would take the next utterance that happened to carry the same tag, which
+    # the tool-name signatures do repeat across calls. The daemon clears it at
+    # startup for the same reason.
+    $skip = Join-Path $script:TtsData 'skip.flag'
+    if (Test-Path -LiteralPath $skip) {
+        Remove-Item -LiteralPath $skip -Force -ErrorAction SilentlyContinue
+    }
 
     # The daemon must NOT be killed here. It holds the voice model in memory,
     # and a restart costs both process startup and about 2 seconds of loading,

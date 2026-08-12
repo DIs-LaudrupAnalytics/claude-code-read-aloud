@@ -81,6 +81,14 @@ try {
     if (-not $text) { exit 0 }
     if ($text -notmatch '[.!?]$') { $text = $text + '.' }
 
+    # Untagged, and it has to stay that way. Every other question is tagged so
+    # that answering it silences what is left of it, but the only key available
+    # here is the shared 'p-any': this event carries neither a tool_use_id nor a
+    # tool name, so there is nothing to compute a per-call signature from.
+    # Silencing on a shared key would cut off whichever question happened to be
+    # open, which is worse than reading one to the end. On this path a question
+    # therefore finishes being read, exactly as it did before, and only a Claude
+    # Code without the PermissionRequest event ever gets here.
     Submit-Speech $text -Priority
 
     # The question is now queued as '0-'. Release the held tool announcement

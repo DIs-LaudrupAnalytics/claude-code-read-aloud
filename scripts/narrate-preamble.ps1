@@ -137,12 +137,21 @@ try {
             # what was queued at or after the marker, so a question queued first
             # would fall outside its own protection. The window used to be
             # microseconds and harmless; it is load-bearing now.
-            Add-Pending ('q-' + [string]$payload.tool_use_id)
+            $askKey = 'q-' + [string]$payload.tool_use_id
+            Add-Pending $askKey
 
             # NOT -Priority: the narration just above is the lead-in to the
             # question and has to come first. And not -Hold: no permission
             # request is coming, so there is nothing to overtake.
-            Submit-Speech $qtext
+            #
+            # Tagged with the same key as the pending entry. Answering the
+            # question then silences what is left of it, including the options
+            # you did not pick, while a second question queued behind it is left
+            # alone. The tag differs from the one on the held announcement just
+            # below, which carries the bare tool_use_id: they belong to the same
+            # call but not to the same moment, and releasing an announcement is
+            # not the same act as retiring a question.
+            Submit-Speech $qtext -Tag $askKey
 
             Start-Waiting
         }
