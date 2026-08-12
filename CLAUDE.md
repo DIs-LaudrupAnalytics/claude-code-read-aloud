@@ -105,11 +105,12 @@ session. It does not disturb an existing install.
 Read `docs/architecture.md` before changing behaviour. It records which failure
 caused each decision. The summary below is orientation only.
 
-**Six hooks, one job each.** `UserPromptSubmit` prepares state and injects the
+**Seven hooks, one job each.** `UserPromptSubmit` prepares state and injects the
 language directive; `PreToolUse` narrates and announces; `PermissionRequest`
 announces approvals fast; `Notification` is a fallback for the same;
 `PostToolUse` clears markers and stops the waiting tone; `Stop` speaks the final
-answer. Registered in `hooks/hooks.json`.
+answer; `SessionStart`, matched on `clear` alone, silences the previous session
+when the context window is cleared. Registered in `hooks/hooks.json`.
 
 **Two roots.** `${CLAUDE_PLUGIN_ROOT}` is the program and is read-only and
 version-bound. `${CLAUDE_PLUGIN_DATA}` is everything mutable and survives
@@ -154,10 +155,19 @@ its absence produced a specific, hard-to-diagnose fault.
   `\u2013` surviving, because the daemon splits on them to insert pauses.
 - **Every hook exits 0 and writes nothing to stdout**, except `tts-prompt.ps1`,
   which must write exactly the hook JSON. `PermissionRequest` must make no
-  decision. The plugin must never be able to block or deny a tool call.
+  decision. The plugin must never be able to block or deny a tool call. This
+  binds hardest on `SessionStart`, whose stdout is injected into Claude's
+  context: anything printed there becomes part of the conversation.
 - **Never interrupt an utterance in progress.** A version that let a question
   break in between two sentences worked, but cutting a sentence mid-thought was
-  heard as a fault.
+  heard as a fault. The rule is about the plugin cutting itself off. It has one
+  exception, the LISTENER cutting it off, and four places act on it: a new prompt
+  and `/clear` stop everything, Escape stops everything once the work loop sees
+  the interruption in the transcript, and answering a question stops the speech
+  belonging to that question and nothing else. The last one uses `skip.flag`,
+  never `stop.flag`, because a stop takes the backlog with it and the next
+  question is usually in that backlog. Count the places if you add one; do not
+  add a fifth that is the plugin's own decision.
 - **The daemon is a singleton via an `msvcrt` file lock**, not the pid file,
   which is written too late to prevent a startup race. Queue items are claimed
   by renaming before the text is read.

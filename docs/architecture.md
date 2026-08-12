@@ -4,10 +4,11 @@ How the pieces fit together, and why they are the way they are. Most of the
 decisions here look arbitrary until you know which failure caused them, so the
 failures are recorded alongside.
 
-## The six hooks
+## The seven hooks
 
 | Event | Script | Job |
 | --- | --- | --- |
+| `SessionStart` (`clear`) | `silence-on-clear.ps1` | stop the previous session's speech when the context window is cleared |
 | `UserPromptSubmit` | `tts-prompt.ps1` | prepare the data directory, empty the queue, play the submitted tone, inject the language directive, start the working loop |
 | `PreToolUse` | `narrate-preamble.ps1` | speak the narration, announce the tool, read out questions with options |
 | `PermissionRequest` | `permission-request.ps1` | say immediately that you are being waited on, start the waiting tone |
@@ -19,6 +20,59 @@ Every hook exits 0 and writes nothing to standard output. `PermissionRequest` in
 particular makes no decision: writing anything that is not valid JSON produces a
 non-blocking error, and denial would require a decision object, which is
 deliberately not used. The plugin should never be able to block a tool call.
+`SessionStart` shares the rule for a different reason: its standard output is
+injected into Claude's context, so anything printed there joins the
+conversation.
+
+`SessionStart` was added last, and only because of what `/clear` does not do.
+Clearing the session is handled inside Claude Code and submits no prompt, so
+`UserPromptSubmit` never runs, and it is the only hook that silences anything.
+The previous turn's answer was already in the queue as files, and the daemon read
+it out into a fresh context window that no longer held a word of it. The hook is
+registered with the matcher `clear` alone. `startup`, `resume` and `fork` have
+nothing of their own to silence and would instead cut off a second session
+sharing the data root, which is a far more common thing to be doing than
+clearing. `compact` is excluded because automatic compaction arrives by itself in
+the middle of a turn: silencing there would be the plugin interrupting itself,
+which is the one thing the exception in the decision log is not. A hand typed
+`/compact` carries the same source value and cannot be distinguished from the
+automatic one.
+
+## Answering a question silences that question
+
+Speech lags the screen. A question is read out while you are already deciding,
+so by the time you answer, the sentence describing what you just decided is
+either still being spoken or still sitting in the queue. Reading it out
+afterwards is worse than saying nothing: it describes a decision that has
+already been made, and it delays whatever comes next.
+
+Two things carry the answer through. The speech belonging to a question is
+queued with the same key as its `pending/` entry as a tag, `p-<id>` for an
+approval and `q-<id>` for an `AskUserQuestion`, and the daemon writes the tag of
+whatever it is speaking into `speaking.flag`. When the entry is removed, which
+is `PostToolUse` for an answer and the next `PermissionRequest` for a denial,
+whatever is left of that question is dropped from the queue and, if it is the
+utterance being spoken right now, skipped.
+
+`skip.flag`, not `stop.flag`, and the difference is the whole point. A stop
+means "be quiet" and drains the backlog with it; a skip means "I have answered
+that one". Claude Code can have a second question queued directly behind the one
+being answered, and a stop would silence exactly the thing the listener is
+waiting to hear. Nothing else in the queue is touched, so the narration leading
+up to the question survives too.
+
+The flag carries the tag it is aimed at, and the daemon compares it against what
+it is actually speaking before it purges anything. Without that comparison the
+skip is a race with the worst possible landing: the answer to question one
+arrives in the moment question two starts, and question two, which has not been
+answered, is the one cut off.
+
+There is one exception to never interrupting an utterance, and it is the listener
+acting rather than the plugin cutting itself off. Four places act on it: typing a
+new prompt (B10), `/clear`, Escape once `work-loop.ps1` sees the interruption in
+the transcript, and answering the question being read. Only the last of those is
+narrow; the other three stop everything, because in all three the listener has
+finished with the whole turn rather than with one question.
 
 ## Two roots
 
