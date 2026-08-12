@@ -2,57 +2,67 @@
 
 ## Hvor vi står
 
-- **The plugin is complete and validates.** Six hooks, the Piper daemon, two
-  background loops, the skill, three manifests. `claude plugin validate .`
-  passes.
-- **Program and data are separated** (B2), so a plugin update no longer
-  overwrites the config or discards the voice model. The hush hotkey points at a
-  fixed directory that survives updates.
-- **All code and documentation is in English** (B3) and every PowerShell and
-  VBScript file is pure ASCII.
-- **Both code review rounds are closed.** Twelve findings in the first pass,
-  seven more from the second, all fixed and pushed. The state that belongs to
-  one tool call is keyed by `tool_use_id` throughout (B6), the synthesis cache
-  and the log have ceilings, and the transcript hooks read only the tail.
-- **Documentation is written from the verified source**, not from recollection:
-  README, `docs/architecture.md` and `CLAUDE.md`. The invariants section of
-  CLAUDE.md is the part that matters most, since each entry prevents a specific
-  fault.
-- **Tested:** every script parses and compiles, all six hooks run end to end with
-  realistic payloads and exit cleanly, and there is now a regression check per
-  review finding covering queue ordering, the hold-and-release logic, the
-  pending set, the tail reader and the cache and log ceilings. Not yet tested as
-  an installed plugin.
+- **Installed as a real plugin and cut over to.** `read-aloud@read-aloud-tools`
+  is installed from the marketplace at user scope, and the old hand-registered
+  install is retired. Its data root is `~/.claude/plugins/data/read-aloud`, with
+  the voice models moved across and the old config merged in, so the language
+  split and `waitTone: false` survived. The six hooks are no longer in
+  `settings.json` and must not go back: both copies would fire.
+- **The install path is tested.** A session that had never seen the plugin
+  provisioned its own data root, loaded the voice and spoke. That was the last
+  untested path.
+- **Two faults found by that test are fixed, reviewed and pushed.** `ee7a9f6`
+  stops speech belonging to an open question being aged out (B7). `87850c3`
+  stops the daemon being started on a Store alias stub that hangs (B8). Four
+  review rounds, and two of them found real regressions in the previous round's
+  fixes.
+- **`PermissionRequest` carries no `tool_use_id`.** Confirmed from the log, twice.
+  The fallback to the tool name was written for this, so nothing needs changing.
+- **Tested:** every script parses, the Python compiles, everything is pure ASCII,
+  manifests validate. 19 regression assertions on the stale rule and 4 on the
+  interpreter resolver, both in the scratchpad rather than the repository, since
+  there is still no test framework here.
 
 ## Åbne tråde
 
-- [ ] **Test the plugin the way a user installs it.** This is the next job and
-      the last untested path. From a fresh session:
-      `claude --plugin-dir "C:\Users\jave\OneDrive - DI\Documents\GitHub\read-aload"`,
-      then check that the six hooks fire, that `/read-aloud:read-aloud on` works,
-      and that the data directory is created under
-      `~/.claude/plugins/data/`. A voice model must be downloaded into its
-      `voices/` directory first, or you get silence and a line in `tts.log`.
-      The live install is still the old manual one in `~/.claude/hooks/tts`, and
-      this does not disturb it.
-- [ ] **Does `PermissionRequest` carry a `tool_use_id`?** Undocumented, and the
-      code takes a weaker path without it. It now logs one line when the id is
-      missing, so the answer is in `tts.log` after the next few approvals.
+- [ ] **Confirm the marketplace data root name.** The new root was built as
+      `~/.claude/plugins/data/read-aloud` on the assumption that a marketplace
+      install drops the `-inline` suffix `--plugin-dir` adds. Unverified: it
+      needs one prompt in a fresh session. If the name differs, move the voices
+      across, which is instant on the same disk.
+- [ ] **Delete `~/.claude/plugins/data/read-aloud-inline`** once the above is
+      confirmed. It is 122 MB of duplicate voice models from the test.
+- [ ] **`tts-prompt.ps1` says voice output is off while it is on.** Line 119
+      requires `enabled` AND `switchLanguage`, so with the split off it takes the
+      else branch. That branch also drops the request for flowing prose, which is
+      why a session reading aloud produced an ASCII table. Needs three cases, not
+      two. Found today, not fixed.
+- [ ] **Does Escape stop the waiting tone?** The `Stop` hook now clears the
+      pending entries and the marker, but Claude Code appears not to run `Stop`
+      on a user interrupt, so the case that prompted the change may not be
+      covered. Press Escape at a live prompt and watch whether the tone stops at
+      once or runs to its ceiling. If it is the ceiling, the fix belongs
+      somewhere that fires on an interrupt, and there may be no such hook.
 - [ ] **Concurrent sessions are documented, not fixed.** Two sessions sharing a
       data root share `transcript.path`, `working.flag` and `waiting.flag`, and
-      each prompt sweeps the other's markers. The fix is to key the three flags
-      by `session_id` and scope the two sweeps.
+      each prompt sweeps the other's markers. `Clear-AllPending` and
+      `Stop-Waiting` in the `Stop` hook now join that family and are the worst
+      members, since they produce silence at the wrong moment. The fix is the
+      same for all of it: key the flags by `session_id`.
+- [ ] **Delete `~/.claude/hooks/tts.retired-2026-08-12`** when satisfied, plus
+      the two `.pre-plugin-test.bak` files beside `settings.json` and
+      `data.path`. Renamed rather than deleted on purpose, so anything still
+      pointing at the old path fails loudly.
 - [ ] **Rename the local folder** from `read-aload` to `claude-code-read-aloud`.
-      The GitHub repository is already renamed; only the directory on disk still
-      has the transposed name. It cannot be renamed from inside a running
-      session, and the `.code-workspace` file is named after it and can go.
+      The GitHub repository is already renamed. It cannot be done from inside a
+      running session, and the `.code-workspace` file is named after it and can
+      go.
 - [ ] **Ownership left as it is for now.** The repository sits under the work
       account `DIs-LaudrupAnalytics`, which is also in the manifests and the
-      licence. Transferring later stays cheap because GitHub keeps redirects, but
-      it would mean editing those files and the README install line.
+      licence. Transferring later stays cheap because GitHub keeps redirects.
 
 ## Senest
 
-12 August 2026: fixed the seven remaining review findings, had them reviewed
-again, fixed the two faults that review found in the fixes, and pushed `f24217d`.
+12 August 2026: ran the first real install test, fixed the two faults it exposed
+across four review rounds, and cut over from the manual install to the plugin.
 See `sessionslog/2026-08-12.md`.

@@ -23,7 +23,9 @@ Operational rules that follow from these decisions are stated as invariants in
 | B3 | 2026-08-12 | English throughout: comments, docstrings, documentation, commit messages | besluttet |
 | B4 | 2026-08-12 | No fallback speech engine, and no code path that cannot be exercised | besluttet |
 | B5 | 2026-08-12 | Project memory: session log local, STATUS and this log committed | besluttet |
-| B6 | 2026-08-12 | Per-call state is keyed by `tool_use_id`, never a single shared flag | besluttet |
+| B6 | 2026-08-12 | Per-call state is keyed by `tool_use_id`, never a single shared flag | besluttet; 2026-08-12 bekraeftet at `PermissionRequest` ikke baerer et id |
+| B7 | 2026-08-12 | Speech belonging to an open question is never aged out; the stale rule keys on `pending/`, not on age alone | besluttet |
+| B8 | 2026-08-12 | The daemon is started only on a verified real interpreter, never a bare name from `PATH` | besluttet |
 
 ## Detaljer
 
@@ -146,3 +148,80 @@ they are: the `Notification` fallback carries neither an id nor a tool name, and
 `PermissionRequest` is undocumented on this point, so it falls back to the tool
 name and logs when it has to. Do not simplify any of these back to a single
 flag; each one was a shared flag first, and this is the failure that followed.
+
+**Status (opdateret 2026-08-12):** `PermissionRequest` is now known to carry no
+`tool_use_id`. The first install test logged it twice, for `WebFetch` and for
+`AskUserQuestion`. Nothing needs changing, since the fallback to the tool name
+was written for exactly this, but the question is settled and the logging can
+stay as evidence rather than as an open enquiry.
+
+### B7 — Speech that belongs to an open question is never aged out (2026-08-12)
+
+**Kontekst:** The daemon discards queue items older than `staleMs`, so a backlog
+built up while it was busy or down is not read out minutes late. The first
+install test showed what that costs when it catches the wrong item. A permission
+announcement queued behind a long narration was discarded after 51 seconds, and
+because the waiting tone runs off its own marker it went on sounding. The result
+is the worst state this plugin can produce: a tone saying somebody is waiting on
+you, and no sentence saying what for. Two rules that are each right alone
+collided, since never interrupting an utterance in progress is exactly what makes
+an urgent item wait long enough to be aged out.
+
+**Beslutning:** The rule is about relevance, not age. Ageing is suspended for
+speech queued from the moment `pending/` says the user was asked something, since
+an unanswered question does not go out of date by waiting in a queue.
+
+Three narrower choices inside it, each of which was the second attempt, and each
+of which a future session will be tempted to simplify away:
+
+- **Keyed on `pending/`, not on the `0-` prefix.** The `AskUserQuestion` text is
+  queued as `1-` on purpose, because the narration leading into it must be spoken
+  first. A prefix test protects the generic permission line and drops the actual
+  question, which is the half that cannot be guessed from the tone.
+- **Scoped to what was queued at or after the question, not the whole queue.**
+  Protecting everything preserved the backlog from before it too, and since
+  `wait-loop.ps1` counts a non-empty queue as speech, the tone then never sounded
+  at all. Unbroken speech means "I am working" here, so the listener was told the
+  opposite of the truth at the moment they were the one holding things up.
+- **Anchored on the oldest open entry, not the newest.** Two entries can be open
+  at once by design. Anchored on the newest, a later approval moved the line
+  forward and retracted an earlier question's protection.
+
+**Konsekvens:** `narrate-preamble.ps1` must write the pending marker BEFORE the
+speech it protects, matching `permission-request.ps1`. That ordering used to be
+irrelevant and is now load-bearing. Two bounds keep the exemption from becoming
+the old bug in a new shape: 15 seconds of slack before the marker, because on the
+`Notification` fallback path the marker lands 6.8 to 9.6 s after the announcement,
+and 120 seconds after it, because a denied call strands its entry and would
+otherwise suspend ageing for the rest of a long turn. `pendingHoldMs` caps the
+whole thing at thirty minutes.
+
+### B8 — The daemon starts only on a verified real interpreter (2026-08-12)
+
+**Kontekst:** `Start-PiperDaemon` launched a bare `pythonw.exe` and let `PATH`
+resolve it. On Windows what `PATH` offers first is usually a Microsoft Store app
+execution alias: a zero-length stub that forwards to the real interpreter. It
+forwards perfectly from a console, which is what makes this so hard to see, since
+`python -c` at a prompt works and the interpreter looks healthy. Started hidden
+and without a console, the way this plugin starts it, the stub can simply hang.
+Observed on both launches of the first install day: the stub sat at 16 MB and a
+tenth of a second of CPU for hours while a second daemon did the work.
+
+**Beslutning:** Resolve the interpreter and verify it. A zero-length file is the
+signal, since a real `python.exe` is a hundred-odd kilobytes and an alias is
+exactly zero. Order: an explicit `pythonPath`, then the cached answer in
+`python.path`, then anything on `PATH` that is not zero length, then the Windows
+launcher. If nothing survives, the daemon is not started and one line says why.
+
+**Konsekvens:** Falling back to the bare name is deliberately not an option. The
+stub hangs BEFORE `claim_singleton`, so the lock never sees it; had it taken the
+lock first it would hold it while hung, and the result is total silence with an
+empty log, indistinguishable from the plugin not being installed at all. That is
+the worst failure mode available here, which is what justifies this much code for
+a launcher. Three ordering details are load-bearing and were each wrong first:
+`pythonPath` is read before the cache, or it can never take effect in the case it
+exists for; `PATH` is preferred over the launcher, because `pip install
+piper-tts` installs into whatever is on `PATH` while the launcher answers with
+the system default; and the launcher is invoked with a three second ceiling
+rather than synchronously, since a function whose whole premise is that these
+stubs hang must not stake a blocking hook on one answering.
