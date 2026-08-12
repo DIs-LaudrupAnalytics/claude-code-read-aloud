@@ -19,13 +19,14 @@ Operational rules that follow from these decisions are stated as invariants in
 | ID | Dato | Beslutning | Status |
 |----|------|------------|--------|
 | B1 | 2026-08-12 | Distributed as a Claude Code plugin with a marketplace manifest; manual install documented as a fallback | besluttet |
-| B2 | 2026-08-12 | Program and data live in separate roots; the hush shortcut gets a fixed directory outside the plugin | besluttet |
+| B2 | 2026-08-12 | Program and data live in separate roots; the hush shortcut gets a fixed directory outside the plugin | besluttet; 2026-08-12 genvejen omdirigeret til den faste mappe efter cutover |
 | B3 | 2026-08-12 | English throughout: comments, docstrings, documentation, commit messages | besluttet |
 | B4 | 2026-08-12 | No fallback speech engine, and no code path that cannot be exercised | besluttet |
 | B5 | 2026-08-12 | Project memory: session log local, STATUS and this log committed | besluttet |
 | B6 | 2026-08-12 | Per-call state is keyed by `tool_use_id`, never a single shared flag | besluttet; 2026-08-12 bekraeftet at `PermissionRequest` ikke baerer et id |
 | B7 | 2026-08-12 | Speech belonging to an open question is never aged out; the stale rule keys on `pending/`, not on age alone | besluttet |
 | B8 | 2026-08-12 | The daemon is started only on a verified real interpreter, never a bare name from `PATH` | besluttet |
+| B9 | 2026-08-12 | The data root name is whatever the harness computes; it is read from `data.path` and never renamed by hand | besluttet |
 
 ## Detaljer
 
@@ -225,3 +226,27 @@ piper-tts` installs into whatever is on `PATH` while the launcher answers with
 the system default; and the launcher is invoked with a three second ceiling
 rather than synchronously, since a function whose whole premise is that these
 stubs hang must not stake a blocking hook on one answering.
+
+### B9 — The data root name belongs to the harness (2026-08-12)
+
+**Kontekst:** The cutover built a data root at
+`~/.claude/plugins/data/read-aloud`, on the assumption that a marketplace
+install drops the `-inline` suffix that `--plugin-dir` adds. It does not. Claude
+Code names the directory after the plugin joined to the marketplace it came
+from, so the real root is `read-aloud-read-aloud-tools` and the hand-built one
+sat beside it holding both voice models while the plugin spoke from an empty
+directory. The stutter in that name invites tidying, which is exactly the risk.
+
+**Beslutning:** The name is not ours to choose. The harness computes the path
+and hands it to the plugin, and the only authority on where it currently is is
+`%USERPROFILE%\.claude\read-aloud\data.path`, which the prompt hook rewrites on
+every prompt. Read that file. Do not derive the path, do not hardcode it, and do
+not rename the directory to something tidier.
+
+**Konsekvens:** Renaming it by hand is not a cosmetic change with a cosmetic
+cost. The next session computes the old path, finds nothing, provisions a fresh
+root with a default config, and the voice models are orphaned again: 120 MB in a
+directory nothing reads, a language split silently reset, and silence as the
+only symptom. The README already says not to guess the directory and to read
+`data.path` instead; this entry records that the advice binds the maintainers
+too, since the cutover was done by guessing while the README said otherwise.

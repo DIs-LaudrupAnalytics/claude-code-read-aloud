@@ -79,6 +79,26 @@ those entries from your `settings.json` before enabling the plugin. Otherwise
 both copies fire on every event, against the same data directory: you get
 doubled speech and two daemons competing for the same queue.
 
+The plugin gets its own data directory, so your voice models and your config are
+not carried over. Send one prompt to let it provision that directory, then read
+`%USERPROFILE%\.claude\read-aloud\data.path` and move the contents of your old
+`voices` directory into the `voices` directory inside the path it names. Moving
+beats downloading again: it is instant on the same disk and the models are over
+a hundred megabytes. The same goes for `tts-config.json` if you have settings
+worth keeping. Read the path rather than deriving it. The directory is named
+after the plugin joined to the marketplace it came from, which is not the name
+you would guess, and a wrong guess leaves the models where nothing reads them.
+
+Repoint your hush shortcut last. The Ctrl+Alt+H shortcut holds the full path to
+`hush.vbs` in the old install, so if you rename or delete that install
+afterwards, the hotkey raises a Windows error box instead of stopping the
+speech. Edit the shortcut to run
+`wscript.exe "%USERPROFILE%\.claude\read-aloud\hush.vbs"`, which is the fixed
+directory the plugin maintains and the one path here that never moves. Test it
+before you remove anything, and rename the old install rather than deleting it,
+so whatever you missed fails loudly instead of quietly writing to a dead
+directory.
+
 ### Manual install
 
 If you would rather not use a plugin, clone the repository anywhere and copy the
