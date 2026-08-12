@@ -471,6 +471,33 @@ def main():
                 log("discarded stale queue item (%.0f s): %s" % (age, items[0]))
                 continue
 
+            # Make sure the model is loaded BEFORE claiming an item. Claiming
+            # deletes the queue file, so a load failure here used to lose the
+            # message as well as killing the daemon: the exception escaped main,
+            # the process exited, and the next utterance spawned a fresh daemon
+            # that died on the next item. Permanent silence, one process per
+            # utterance. Loading first means a failure costs nothing but this
+            # daemon, and the queue survives for a later attempt.
+            #
+            # The load is guarded for the same reason the preload is. A model
+            # file can exist and still be unloadable: an interrupted download
+            # leaves the .onnx without its .onnx.json sidecar. Test-PiperReady
+            # now checks for both, but that is a race, not a guarantee.
+            model = cfg.get("piperModel", "en_US-lessac-medium")
+            if model != loaded_model:
+                onnx = os.path.join(VOICEDIR, model + ".onnx")
+                if not os.path.exists(onnx):
+                    log("model missing: %s" % onnx)
+                    break
+                try:
+                    t0 = time.time()
+                    voice = PiperVoice.load(onnx)
+                    loaded_model = model
+                    log("loaded %s in %.1f s" % (model, time.time() - t0))
+                except Exception as e:
+                    log("could not load %s: %s - exiting, queue left intact" % (onnx, e))
+                    break
+
             # Claim the item by renaming it BEFORE the text is read. The order
             # used to be the other way round: read, speak, remove, and then two
             # processes could read the same message and say it simultaneously.
@@ -494,17 +521,6 @@ def main():
                 pass
             if not text.strip():
                 continue
-
-            model = cfg.get("piperModel", "en_US-lessac-medium")
-            if model != loaded_model:
-                onnx = os.path.join(VOICEDIR, model + ".onnx")
-                if not os.path.exists(onnx):
-                    log("model missing: %s" % onnx)
-                    break
-                t0 = time.time()
-                voice = PiperVoice.load(onnx)
-                loaded_model = model
-                log("loaded %s in %.1f s" % (model, time.time() - t0))
 
             sent_pause = float(cfg.get("sentencePause", 0.35))
             dash_pause = float(cfg.get("dashPause", sent_pause))

@@ -337,6 +337,13 @@ function Test-PiperReady($cfg) {
     # and must not be re-downloaded every time the plugin updates.
     $onnx  = Join-Path (Join-Path $script:TtsData 'voices') ($model + '.onnx')
     if (-not (Test-Path -LiteralPath $onnx)) { Write-TtsLog "piper: model missing $onnx"; return $false }
+    # The sidecar matters as much as the model. Piper needs both, and an
+    # interrupted download leaves the .onnx alone, which used to pass this gate
+    # and hand the daemon a model it could not load.
+    if (-not (Test-Path -LiteralPath ($onnx + '.json'))) {
+        Write-TtsLog "piper: config missing $onnx.json (incomplete download?)"
+        return $false
+    }
     if (-not (Test-Path -LiteralPath (Join-Path $script:TtsScripts 'piper-daemon.py'))) { return $false }
     return $true
 }

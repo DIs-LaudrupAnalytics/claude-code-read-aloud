@@ -54,12 +54,36 @@ claude plugin validate .
 Set `CLAUDE_TTS_DATA` to a scratch directory and pipe a JSON payload into a hook
 on stdin. With no `.onnx` in `<data>/voices`, nothing is spoken and the failure
 is written to `<data>/tts.log`, which makes this safe to run while a real
-session is active:
+session is active.
+
+The payload must carry a `transcript_path` that exists, and the config must have
+`enabled` set. Without either, the hook returns on its second line and the test
+passes while proving nothing:
 
 ```powershell
-$env:CLAUDE_TTS_DATA = "C:\temp\ttstest"
-'{"tool_name":"Bash","tool_use_id":"c1","tool_input":{"description":"List files"}}' |
+$d = "C:\temp\ttstest"; Remove-Item -Recurse -Force $d -EA 0
+New-Item -ItemType Directory $d | Out-Null
+$env:CLAUDE_TTS_DATA = $d
+$tp = "$d\transcript.jsonl"
+@('{"type":"user","uuid":"u1","message":{"content":"hi"}}',
+  '{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"Checking the config."}]}}'
+) | Set-Content $tp -Encoding utf8
+powershell -NoProfile -File scripts\tts-prompt.ps1 '{}' | Out-Null   # provisions $d
+(Get-Content "$d\tts-config.json" -Raw).Replace('"enabled": false','"enabled": true') |
+  Set-Content "$d\tts-config.json" -Encoding utf8
+
+@{ session_id='smoke'; transcript_path=$tp; tool_name='Bash'; tool_use_id='smoke1'
+   tool_input=@{ description='List the files' } } | ConvertTo-Json -Compress |
   powershell -NoProfile -File scripts\narrate-preamble.ps1
+```
+
+It passes when all three of these are true, and the log shows the speech attempt
+reaching the Piper gate:
+
+```powershell
+Test-Path "$d\running\smoke1.txt"   # the running marker was written
+Test-Path "$d\transcript.path"      # the loop can find the transcript
+Test-Path "$d\state\smoke.txt"      # the watermark stops a re-read
 ```
 
 To test queue ordering in-process, dot-source `tts-common.ps1`, then shadow the

@@ -48,23 +48,36 @@ session and not a blocked tool call.
 /plugin install read-aloud@read-aloud-tools
 ```
 
-Then download a voice. The plugin keeps its data in a directory that survives
-plugin updates, so the model is fetched once and stays put:
+Then send one prompt in Claude Code. Nothing will be spoken yet, but the plugin
+creates its data directory and writes the path to it into
+`%USERPROFILE%\.claude\read-aloud\data.path`.
+
+Read that file, and download a voice into the `voices` directory inside the path
+it names:
 
 ```
 pip install piper-tts
-python -m piper.download_voices en_US-lessac-medium --data-dir "%USERPROFILE%\.claude\plugins\data\read-aloud-read-aloud-tools\voices"
+type "%USERPROFILE%\.claude\read-aloud\data.path"
+python -m piper.download_voices en_US-lessac-medium --data-dir "<that path>\voices"
 ```
 
-If that path does not exist yet, send one prompt in Claude Code first. The
-plugin creates its data directory on the first prompt and writes the exact path
-into `%USERPROFILE%\.claude\read-aloud\data.path`.
+Do not guess the directory. `--data-dir` creates whatever you point it at, so a
+wrong path downloads sixty megabytes somewhere the plugin never looks, and the
+only symptom is silence plus one line in `tts.log`. The data directory is
+deliberately separate from the plugin so that updates do not discard the model.
 
 Finally, switch it on:
 
 ```
 /read-aloud:read-aloud on
 ```
+
+### Upgrading from a manual install
+
+If you already run these scripts with the six hooks registered by hand, remove
+those entries from your `settings.json` before enabling the plugin. Otherwise
+both copies fire on every event, against the same data directory: you get
+doubled speech and two daemons competing for the same queue.
 
 ### Manual install
 

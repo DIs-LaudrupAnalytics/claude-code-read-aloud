@@ -23,6 +23,34 @@
 
 ## Åbne tråde
 
+- [ ] **Second pass on the code review.** Five findings fixed; these remain, in
+      the order I would take them:
+      - The synthesis cache never evicts. Tool announcements embed a unique
+        command description, so they are cached and never reused: 337 files and
+        40 MB after twelve hours of real use. `tts.log` never rotates either.
+      - Both transcript-reading hooks (`narrate-preamble.ps1:48`,
+        `speak-response.ps1:38`) load the whole transcript on every call, when
+        only the tail is needed. `work-loop.ps1` already tails 8 kB for exactly
+        this reason. On a long session this can approach the 10 s hook timeout,
+        and narration then dies silently.
+      - `Release-HeldSpeech` releases every held announcement, not the one
+        belonging to the tool that finished. With parallel tool calls this lets a
+        second description escape before Claude Code has decided whether to ask,
+        which defeats the ordering guarantee. `pending.flag` has the same shape:
+        any tool finishing clears it while another approval may still be open.
+      - `transcript.path`, `working.flag` and `waiting.flag` are single files in
+        one data root, so two concurrent sessions collide. At minimum document
+        it; the transcript pointer is also stale in a turn with no tool calls.
+      - `drain_queue` is unconditional, so it also deletes items queued in the
+        ~1 s window after a stop, not just the backlog the stop was aimed at.
+      - `@($payload.tool_input.questions)` has count 1 when `questions` is null
+        in PowerShell 5.1, so the zero guard never fires and a malformed payload
+        is read aloud as "Option one. ." Also `$ord` is indexed without the
+        bounds check the option loop has, so more than eight questions gives
+        "Question, of nine."
+      - The first two comment blocks in `.gitignore` are Danish, which
+        contradicts B3.
+
 - [ ] **Test the plugin the way a user installs it.** This is the next job and
       the last untested path. From a fresh session:
       `claude --plugin-dir "C:\Users\jave\OneDrive - DI\Documents\GitHub\read-aload"`,
