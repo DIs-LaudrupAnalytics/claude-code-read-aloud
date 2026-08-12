@@ -1,0 +1,20 @@
+# Dataroden hoerer aldrig til i repoet. Den ligger normalt uden for tjekket,
+# men en manuel installation kan pege den herind under proevekoersler.
+data/
+
+# Stemmemodeller hentes ved installation. De fylder et par hundrede megabyte.
+*.onnx
+*.onnx.json
+
+__pycache__/
+*.pyc
+
+# The session log is a diary: local only, and it grows without end.
+# STATUS.md and .claude/beslutningslog.md are committed on purpose. The decision
+# log exists to stop a later session reversing something that was settled, and it
+# can only do that for other people if they actually have it.
+sessionslog/
+.claude/settings.local.json
+
+# Editor workspace file, named after the local folder.
+*.code-workspace

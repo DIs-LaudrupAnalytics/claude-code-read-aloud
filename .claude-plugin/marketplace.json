@@ -1,0 +1,22 @@
+{
+  "name": "read-aloud-tools",
+  "owner": {
+    "name": "DIs-LaudrupAnalytics",
+    "url": "https://github.com/DIs-LaudrupAnalytics"
+  },
+  "description": "Accessibility tooling for Claude Code.",
+  "plugins": [
+    {
+      "name": "read-aloud",
+      "source": ".",
+      "description": "Eyes-free Claude Code on Windows: speaks the answers, the narration, and the questions it needs you to answer, using a local Piper voice.",
+      "category": "accessibility",
+      "tags": [
+        "accessibility",
+        "text-to-speech",
+        "piper",
+        "windows"
+      ]
+    }
+  ]
+}

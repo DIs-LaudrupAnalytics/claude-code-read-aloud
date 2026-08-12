@@ -1,0 +1,19 @@
+{
+  "name": "read-aloud",
+  "description": "Eyes-free Claude Code on Windows: speaks the answers, the narration, and the questions it needs you to answer, using a local Piper voice.",
+  "version": "0.1.0",
+  "author": {
+    "name": "DIs-LaudrupAnalytics"
+  },
+  "homepage": "https://github.com/DIs-LaudrupAnalytics/claude-code-read-aloud",
+  "repository": "https://github.com/DIs-LaudrupAnalytics/claude-code-read-aloud",
+  "license": "MIT",
+  "keywords": [
+    "accessibility",
+    "text-to-speech",
+    "piper",
+    "voice",
+    "windows",
+    "screen-free"
+  ]
+}
