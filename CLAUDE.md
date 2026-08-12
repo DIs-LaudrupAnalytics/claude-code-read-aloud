@@ -161,6 +161,16 @@ If a file is absent, it simply has not been written yet.
 
 Maintained by `/update-session-log`, not by hand.
 
+## Before committing
+
+Run `/code-review` on substantive changes before they are committed, and act on
+what it finds. It reviews the working diff, so it has to run while the changes
+are still uncommitted.
+
+There is no test suite here, so the verification commands above plus a review are
+the whole safety net. Both matter more than usual because most of what could
+break is timing and ordering, which a passing parse does not catch.
+
 ## Conventions
 
 English throughout: comments, docstrings, documentation and commit messages.
