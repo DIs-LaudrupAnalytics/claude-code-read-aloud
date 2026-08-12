@@ -247,7 +247,49 @@ try {
         $spent += 250
         if (($spent % 2000) -eq 0) {
             if (-not (Sync-Settings)) { $why = 'switched off mid-run'; break }
-            if (Test-Interrupted) { $why = 'interrupted by the user'; Clear-AllRunningMarkers; break }
+            if (Test-Interrupted) {
+                # Escape is the listener acting, exactly like typing a new
+                # prompt, so it gets the same answer: everything falls quiet at
+                # once. This loop already knew about the interruption and used it
+                # only to stop reporting a dead command, so the queue carried on
+                # reading out a question that had just been dismissed, and the
+                # one thing that stopped it was typing something new, which is
+                # precisely what a listener presses Escape to avoid.
+                #
+                # There is no hook for this. Claude Code does not run Stop on an
+                # interruption, and no event fires when a question is dismissed;
+                # the transcript entry read above is the only evidence that
+                # exists. Verified live on 12 August 2026: dismissing a question
+                # with Escape left the speech running to the end.
+                #
+                # Stop-AllSpeech includes Clear-AllRunningMarkers, which is what
+                # used to be here on its own.
+                #
+                # Known limitation, and it is the price of putting this in the
+                # only process that already watches the transcript: this loop
+                # runs only while working.flag exists, so with `working` set to
+                # false, or after workingMaxMs, Escape silences nothing. An
+                # unrelated setting therefore gates it. The alternative is a
+                # watcher process of its own, which is more machinery than the
+                # case has earned so far.
+                # Ownership is re-checked HERE, and not only at the top of the
+                # loop, because the gap between the two is exactly where this
+                # goes wrong. Pressing Escape and then typing is the normal
+                # sequence, and typing runs Stop-AllSpeech and Start-Working in
+                # another process while this one is still inside its 250 ms
+                # sleep. The interruption entry is a level, not an edge: it stays
+                # the last line of the transcript until Claude Code appends the
+                # new prompt. So this branch could fire on a turn that had
+                # already begun and silence it: the new loop's marker deleted,
+                # the new pending entries cleared, and the first speech of the
+                # new turn drained by the stop flag. While the branch only
+                # cleared running markers that race was nearly harmless, which
+                # is why it survived; silencing makes it expensive.
+                if (-not (Test-Mine)) { $why = 'taken over during the interruption'; break }
+                $why = 'interrupted by the user'
+                Stop-AllSpeech
+                break
+            }
         }
     }
     if ($spent -ge $maxMs) { $why = 'time ceiling' }
