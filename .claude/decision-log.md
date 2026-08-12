@@ -23,6 +23,7 @@ Operational rules that follow from these decisions are stated as invariants in
 | B3 | 2026-08-12 | English throughout: comments, docstrings, documentation, commit messages | besluttet |
 | B4 | 2026-08-12 | No fallback speech engine, and no code path that cannot be exercised | besluttet |
 | B5 | 2026-08-12 | Project memory: session log local, STATUS and this log committed | besluttet |
+| B6 | 2026-08-12 | Per-call state is keyed by `tool_use_id`, never a single shared flag | besluttet |
 
 ## Detaljer
 
@@ -118,3 +119,30 @@ every session, so on a project with several people working in parallel it will
 conflict every time; there, ignoring it may be the better trade. Placement inside
 `.claude/` is deliberate but does no enforcing by itself: nothing there is loaded
 automatically, and it is the pointer in `CLAUDE.md` that gives this file effect.
+
+### B6 — Per-call state is keyed by `tool_use_id` (2026-08-12)
+
+**Kontekst:** Three separate faults turned out to be the same fault. A single
+`running.flag` was deleted by whichever call finished first, so the status
+message reported the wrong command and the wrong elapsed time. A single
+`pending.flag` was cleared the same way, so the waiting tone stopped while the
+approval question was still on screen. And `Release-HeldSpeech` freed every held
+announcement at once, so with two calls in flight the first to finish let the
+second one's description out before Claude Code had decided whether to ask about
+it, and the question then arrived after its own answer. Tools run in parallel,
+and every shared flag in this design was cleared by the wrong owner.
+
+**Beslutning:** Anything that belongs to one tool call is keyed by its
+`tool_use_id`: one marker file per call in `running/`, one entry per open
+approval in `pending/`, and the id embedded in the queue file name of a held
+announcement so `PostToolUse` can release its own and nothing else. A hook that
+has no id does the safe thing instead of the prompt thing: it releases nothing
+and lets `holdMs` expire.
+
+**Konsekvens:** Three directories where there were three flag files, and a
+sweep for entries a denied call left behind, since a denial never reaches
+`PostToolUse`. Two places still cannot be keyed, and both are documented where
+they are: the `Notification` fallback carries neither an id nor a tool name, and
+`PermissionRequest` is undocumented on this point, so it falls back to the tool
+name and logs when it has to. Do not simplify any of these back to a single
+flag; each one was a shared flag first, and this is the failure that followed.
