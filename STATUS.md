@@ -1,4 +1,4 @@
-# Status — 2026-08-12
+# Status — 2026-08-13
 
 ## Hvor vi står
 
@@ -87,6 +87,22 @@
       data root share `transcript.path`, `working.flag` and `waiting.flag`, and
       each prompt sweeps the other's markers. `/clear` now joins that family and
       says so in the file. The fix is the same for all of it: key by `session_id`.
+- [ ] **One speaking session at a time, chosen by an owner token.** Wanted
+      feature, and the cheaper half of the thread above. Nothing separates
+      sessions today: one data root, one queue, one daemon, and a queue item is
+      only `<prefix>-<ticks>-<guid>.txt`, so every session speaks into the same
+      ear. `state/<session>.txt` is the only keyed state there is, and it stops a
+      repeat within a session, not another session. The shape: `tts-prompt.ps1`
+      writes an owner token on every prompt, the other six hooks return early
+      unless they match, and the session you last typed into is the one that
+      talks. Roughly six guard lines, one helper pair in `tts-common.ps1`, and a
+      hand-over that is mostly a rewrite of the sweep the prompt hook already
+      does. `piper-daemon.py` is untouched. Four things to settle first: the guard
+      goes before any state change and not in front of `Submit-Speech`; no token
+      or no `session_id` must mean speak, since silence means "you are up";
+      `/clear` arrives as a new session, so the token needs `cwd` as well; and
+      `work-loop.ps1`'s marker logic needs reading rather than assuming. Design
+      and the two rejected alternatives are in `sessionslog/2026-08-13.md`.
 - [ ] **Delete `~/.claude/hooks/tts.retired-2026-08-12`** when satisfied, plus the
       two `.pre-plugin-test.bak` files, and the now unused `0.1.0` plugin cache.
 - [ ] **Rename the local folder** from `read-aload` to `claude-code-read-aloud`.
@@ -98,7 +114,7 @@
 
 ## Senest
 
-12 August 2026: four faults found in live use and fixed, `/clear`, answering a
-question, Escape, and a waiting tone that Bluetooth had been swallowing all along.
-Two review rounds, then `0.2.0` pushed and installed. See
+13 August 2026: no code changed. Read how sessions share one voice, and settled
+on the owner token as the shape of the fix when it gets built. See
+`sessionslog/2026-08-13.md`; the 0.2.0 work the day before is in
 `sessionslog/2026-08-12.md`.
